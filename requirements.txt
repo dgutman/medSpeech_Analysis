@@ -3,3 +3,12 @@ tqdm
 scipy
 pandas
 pixeltable
+python-dotenv
+jupyter
+openai-whisper
+torch
+jiwer
+pandas
+plotly
+matplotlib
+seaborn

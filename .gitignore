@@ -1,0 +1,7 @@
+HTMFine-Tune*/
+extracted_audio/
+archived/
+.env
+.pxtData/
+*.wav
+.pxtDataV2/

@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 import pandas as pd
 from pixeltable.functions.audio import get_metadata
 from pixeltable.functions import whisper
-
+from datetime import datetime
 
 ## I set the PIXELTABLE_PGDATA environment variable in the .env file so that pixeltable stores the data on my NVME Drive
 ## You need to import this before starting pixeltable.
@@ -43,6 +43,26 @@ t = pxt.get_table('hani89_asr_data.transcribe_compare')
 
 ## Load the training data
 ## DEBUG: Only load the first 100 samples for testing
+
+
+
+### TO DO: See if there is more elegant syntax for this
+alreadyLoadedFiles = t.select(t.filePath).collect()['filePath']
+
+recordsToLoad = 100
+
+startTime = datetime.now()
+
+recs = []
+for i, row in train_df.iterrows():
+    if row['filename'] not in alreadyLoadedFiles:
+        recs.append({'id': row['filename'], 'audio': row['filePath'], 'filename': row['filename'], 'transcription': row['transcription'], 'split': row['split'], 'filePath': row['filePath']})
+        if len(recs) >= recordsToLoad:
+            break
+
+t.insert(recs)
+endTime = datetime.now()
+print(f"Time taken to load {recordsToLoad} samples: {endTime - startTime}")
 
 
 
