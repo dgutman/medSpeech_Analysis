@@ -95,24 +95,98 @@ df_long['Model'] = pd.Categorical(df_long['Model'],
                                   categories=['Whisper Tiny', 'Whisper Small', 'Whisper Medium', 'Whisper Large', 'Whisper Turbo',],
                                   ordered=True)
 
-# Create matplotlib boxplot
+# Create multiple visualizations for different scales
+import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec
+
+# Create a figure with multiple subplots
+fig = plt.figure(figsize=(20, 12))
+gs = GridSpec(2, 3, figure=fig, hspace=0.3, wspace=0.3)
+
+# 1. Boxplot (good for current scale, ~200 points)
+ax1 = fig.add_subplot(gs[0, 0])
+sns.set_style("whitegrid")
+sns.boxplot(data=df_long, x='Model', y='WER', hue='Model', ax=ax1)
+sns.stripplot(data=df_long, x='Model', y='WER', color='black', alpha=0.3, size=2, ax=ax1)
+ax1.set_title("WER Comparison - Boxplot", fontsize=14, pad=15)
+ax1.set_xlabel("Whisper Model", fontsize=12)
+ax1.set_ylabel("Word Error Rate (%)", fontsize=12)
+ax1.tick_params(axis='x', rotation=45)
+ax1.set_ylim(0, min(120, df_long['WER'].max() + 10))
+ax1.legend().remove()
+
+# 2. Violin plot (better for distribution shape)
+ax2 = fig.add_subplot(gs[0, 1])
+sns.violinplot(data=df_long, x='Model', y='WER', hue='Model', ax=ax2)
+ax2.set_title("WER Distribution - Violin Plot", fontsize=14, pad=15)
+ax2.set_xlabel("Whisper Model", fontsize=12)
+ax2.set_ylabel("Word Error Rate (%)", fontsize=12)
+ax2.tick_params(axis='x', rotation=45)
+ax2.set_ylim(0, min(120, df_long['WER'].max() + 10))
+ax2.legend().remove()
+
+# 3. Kernel Density Plot (much better for overlapping distributions)
+ax3 = fig.add_subplot(gs[0, 2])
+# Define colors to match seaborn's default palette
+colors = sns.color_palette("husl", len(df_long['Model'].unique()))
+for i, model in enumerate(df_long['Model'].unique()):
+    model_data = df_long[df_long['Model'] == model]['WER']
+    model_data = model_data.dropna()  # Remove NaN values
+    if len(model_data) > 0:  # Only plot if we have data
+        ax3.hist(model_data, alpha=0.3, label=model, bins=15, density=True, 
+                histtype='step', linewidth=2, edgecolor=colors[i], color=colors[i])
+ax3.set_title("WER Distribution - Density Plot", fontsize=14, pad=15)
+ax3.set_xlabel("Word Error Rate (%)", fontsize=12)
+ax3.set_ylabel("Density", fontsize=12)
+ax3.legend()
+
+# 4. Summary statistics table
+ax4 = fig.add_subplot(gs[1, :])
+ax4.axis('off')
+
+# Calculate summary statistics
+summary_stats = df_long.groupby('Model')['WER'].agg(['count', 'mean', 'std', 'min', 'max', 'median']).round(2)
+summary_stats.columns = ['Count', 'Mean', 'Std Dev', 'Min', 'Max', 'Median']
+
+# Create table
+table_data = []
+for model in summary_stats.index:
+    row = [model] + [f"{summary_stats.loc[model, col]:.2f}" for col in summary_stats.columns]
+    table_data.append(row)
+
+table = ax4.table(cellText=table_data,
+                 colLabels=['Model'] + list(summary_stats.columns),
+                 cellLoc='center',
+                 loc='center',
+                 bbox=[0, 0, 1, 1])
+table.auto_set_font_size(False)
+table.set_fontsize(10)
+table.scale(1, 2)
+ax4.set_title("Summary Statistics", fontsize=16, pad=20)
+
+plt.suptitle("Comprehensive WER Analysis Across Whisper Models", fontsize=20, y=0.98)
+plt.tight_layout()
+
+# Save the comprehensive plot
+plt.savefig('analysisResults/hani89_asr_data_wer_comprehensive.png', dpi=300, bbox_inches='tight')
+plt.close()
+
+# Also create a simple boxplot for quick reference
 plt.figure(figsize=(12, 8))
 sns.set_style("whitegrid")
 sns.boxplot(data=df_long, x='Model', y='WER', hue='Model')
-sns.stripplot(data=df_long, x='Model', y='WER', color='black', alpha=0.3, size=3)
+sns.stripplot(data=df_long, x='Model', y='WER', color='black', alpha=0.3, size=2)
 
 plt.title("WER Comparison Across Whisper Models", fontsize=20, pad=20)
 plt.xlabel("Whisper Model", fontsize=14)
 plt.ylabel("Word Error Rate (%)", fontsize=14)
 plt.xticks(rotation=45)
 plt.ylim(0, min(120, df_long['WER'].max() + 10))
-plt.legend().remove()  # Remove legend since colors match x-axis labels
+plt.legend().remove()
 
 plt.tight_layout()
-
-# Save as PNG
 plt.savefig('analysisResults/hani89_asr_data_wer_boxplot.png', dpi=300, bbox_inches='tight')
-plt.close()  # Close the figure to free memory
+plt.close()
 
 # Also save the processed data with WER scores
 df.to_csv('analysisResults/hani89_asr_data_with_wer.csv', index=False)
@@ -121,6 +195,7 @@ print("Analysis complete!")
 print("Files saved:")
 print("- analysisResults/hani89_asr_data.csv (raw data)")
 print("- analysisResults/hani89_asr_data_with_wer.csv (data with WER scores)")
-print("- analysisResults/hani89_asr_data_wer_boxplot.png (static image)")
+print("- analysisResults/hani89_asr_data_wer_boxplot.png (simple boxplot)")
+print("- analysisResults/hani89_asr_data_wer_comprehensive.png (multi-panel analysis)")
 
 
