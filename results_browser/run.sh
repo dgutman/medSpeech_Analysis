@@ -19,11 +19,13 @@ echo ""
 case "$1" in
     "up")
         echo "🚀 Starting results browser (data prep happens automatically)..."
-        docker compose up results-browser
+        shift  # Remove "up" from arguments
+        docker compose up results-browser "$@"
         ;;
     "dev")
         echo "🚀 Starting results browser in development mode (with bind mounts)..."
-        docker compose --profile dev up results-browser-dev
+        shift  # Remove "dev" from arguments
+        docker compose --profile dev up results-browser-dev "$@"
         ;;
     "build")
         echo "🔨 Building application container (includes data prep)..."
@@ -55,7 +57,9 @@ case "$1" in
         echo ""
         echo "Typical workflow:"
         echo "  1. Development: ./run.sh dev (changes are live, no rebuild needed)"
+        echo "     Detached:    ./run.sh dev -d"
         echo "  2. Production:  ./run.sh up"
+        echo "     Detached:    ./run.sh up -d"
         exit 1
         ;;
 esac

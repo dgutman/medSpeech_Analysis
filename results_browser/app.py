@@ -142,6 +142,43 @@ def get_data():
     
     return cached_data
 
+# Add custom CSS for hallucination table styling
+app.index_string = '''
+<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        {%favicon%}
+        {%css%}
+        <style>
+            .hallucination-yes {
+                background-color: #ffcccc !important;
+                text-align: center;
+            }
+            .hallucination-no {
+                background-color: #ccffcc !important;
+                text-align: center;
+            }
+            .flag-repetition { background-color: #ffeb3b !important; text-align: center; opacity: 0.7; }
+            .flag-length-anomaly { background-color: #ff9800 !important; text-align: center; opacity: 0.7; }
+            .flag-char-repetition { background-color: #f44336 !important; text-align: center; opacity: 0.7; }
+            .flag-insertions { background-color: #9c27b0 !important; text-align: center; opacity: 0.7; }
+            .flag-stuttering { background-color: #e91e63 !important; text-align: center; opacity: 0.7; }
+            .has-details { background-color: #fff3cd !important; }
+        </style>
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>
+            {%config%}
+            {%scripts%}
+            {%renderer%}
+        </footer>
+    </body>
+</html>
+'''
+
 # Layout
 app.layout = dbc.Container([
     # Header
@@ -195,7 +232,8 @@ app.layout = dbc.Container([
                 dbc.Tab(label="📈 Analytics", tab_id="analytics-tab"),
                 dbc.Tab(label="🔍 Compare", tab_id="compare-tab"),
                 dbc.Tab(label="⚠️ Hallucinations", tab_id="hallucinations-tab"),
-                dbc.Tab(label="🎵 Audio Player", tab_id="audio-tab")
+                dbc.Tab(label="🎵 Audio Player", tab_id="audio-tab"),
+                dbc.Tab(label="🤖 Models", tab_id="models-tab")
             ], id="main-tabs", active_tab="table-tab")
         ])
     ]),
@@ -211,8 +249,8 @@ app.layout = dbc.Container([
     dcc.Store(id="wer-method-store", data="basic"),
     dcc.Store(id="compare-sample-id-store", data=None),
     
-    # Store for hallucinations tab
-    dcc.Store(id="hallucinations-data-store", data=None),
+    # Lightweight store for hallucination flags (just row IDs and flags, not full data)
+    dcc.Store(id="hallucinations-flags-store", data=None),
     
     # Footer
     dbc.Row([
@@ -257,7 +295,7 @@ def update_dataset_stats(active_tab):
 
 @app.callback(
     [Output("tab-content", "children"),
-     Output("hallucinations-data-store", "data")],
+     Output("hallucinations-flags-store", "data")],
     [Input("main-tabs", "active_tab"),
      Input("split-filter", "value"),
      Input("search-input", "value"),
@@ -268,7 +306,7 @@ def update_tab_content(active_tab, split_filter, search_term, wer_method, sample
     """Update content based on active tab and filters"""
     try:
         df = get_data()
-        hallucinations_data = None
+        hallucination_flags = None
         
         # Apply filters
         if split_filter:
@@ -288,13 +326,15 @@ def update_tab_content(active_tab, split_filter, search_term, wer_method, sample
         elif active_tab == "compare-tab":
             content = create_compare_tab(df, wer_method, sample_id)
         elif active_tab == "hallucinations-tab":
-            content, hallucinations_data = create_hallucinations_tab(df)
+            content, hallucination_flags = create_hallucinations_tab(df)
         elif active_tab == "audio-tab":
             content = create_audio_tab(df)
+        elif active_tab == "models-tab":
+            content = create_models_tab()
         else:
             content = html.Div("Select a tab")
         
-        return content, hallucinations_data
+        return content, hallucination_flags
             
     except Exception as e:
         logger.error(f"Error updating tab content: {e}")
@@ -381,33 +421,123 @@ def handle_sample_id_input(n_submit, sample_id_input, current_id):
      Output("hallucinations-grid", "columnDefs")],
     [Input("hallucinations-filter-checkbox", "value"),
      Input("hallucinations-model-selector", "value"),
-     Input("hallucinations-data-store", "data"),
-     Input("main-tabs", "active_tab")],
+     Input("main-tabs", "active_tab"),
+     Input("split-filter", "value"),
+     Input("search-input", "value"),
+     Input("hallucinations-flags-store", "data")],
     prevent_initial_call=False
 )
-def update_hallucinations_table(filter_hallucinations, selected_models, stored_data, active_tab):
-    """Filter hallucinations table based on checkbox and model selection"""
-    if active_tab != "hallucinations-tab" or stored_data is None:
+def update_hallucinations_table(filter_hallucinations, selected_models, active_tab, split_filter, search_term, hallucination_flags):
+    """Filter hallucinations table based on checkbox and model selection
+    
+    Uses lightweight hallucination_flags store to efficiently filter rows before processing.
+    """
+    if active_tab != "hallucinations-tab":
         raise PreventUpdate
     
+    if hallucination_flags is None:
+        return [], []
+    
     try:
-        data = stored_data.get("data", [])
-        model_cols = stored_data.get("model_cols", {})
+        # Get fresh data
+        df = get_data()
         
-        if not data:
-            return [], []
+        # Apply global filters first
+        if split_filter:
+            df = df[df['split'] == split_filter]
         
-        df_hall = pd.DataFrame(data)
+        if search_term:
+            df = df[df['transcription'].str.contains(search_term, case=False, na=False)]
         
-        # Filter to only rows with hallucinations if checkbox is checked
+        # Filter rows using lightweight flags store BEFORE processing
+        # Only rows with hallucinations are in the flags store
         if filter_hallucinations and "filter" in filter_hallucinations:
-            # Check if any selected model has a hallucination
-            has_hallucination_mask = pd.Series([False] * len(df_hall))
-            for model_name in (selected_models or []):
-                flag_col = f"{model_name}_has_hallucination"
-                if flag_col in df_hall.columns:
-                    has_hallucination_mask = has_hallucination_mask | (df_hall[flag_col] == True)
-            df_hall = df_hall[has_hallucination_mask]
+            # Only keep rows that have hallucinations in selected models
+            selected_models_list = selected_models or []
+            if selected_models_list:
+                row_ids_with_hallucinations = set()
+                # Only iterate through rows that have hallucinations (stored in flags)
+                for row_id, model_flags in hallucination_flags.items():
+                    # Check if any selected model has a hallucination for this row
+                    for model_name in selected_models_list:
+                        if model_name in model_flags:  # Model has hallucination if it's in the flags
+                            row_ids_with_hallucinations.add(row_id)
+                            break
+                # Filter dataframe to only rows with hallucinations
+                df = df[df['id'].astype(str).isin(row_ids_with_hallucinations)]
+        
+        # Now process only the filtered rows
+        df_processed = df.copy()
+        whisper_cols = [col for col in df.columns if 'whisper' in col.lower()]
+        for col in whisper_cols:
+            df_processed[col] = df_processed[col].apply(extract_text_from_transcription)
+        
+        # Build model name to column mapping
+        model_name_to_col = {}
+        for col in whisper_cols:
+            model_name = col.replace('whisper_', '').replace('_transcription', '').replace('_', ' ').title()
+            model_name_to_col[model_name] = col
+        
+        # Calculate full data only for filtered rows (we already have flags, but need full records)
+        hallucination_data = []
+        
+        for idx, row in df_processed.iterrows():
+            row_id = str(row.get('id', ''))
+            record = {
+                'id': row_id,
+                'split': row.get('split', ''),
+                'transcription': row.get('transcription', '')
+            }
+            
+            reference = row.get('transcription', '')
+            
+            # Get flags from store (if row has hallucinations, it will be in the store)
+            row_flags = hallucination_flags.get(row_id, {})
+            
+            # Check each whisper model for hallucinations
+            for col in whisper_cols:
+                model_name = col.replace('whisper_', '').replace('_transcription', '').replace('_', ' ').title()
+                hypothesis = row.get(col, '')
+                
+                # Use flags from store if available, otherwise no hallucinations
+                if row_id in hallucination_flags and model_name in row_flags:
+                    # Use stored flags (this model has hallucinations)
+                    flags = row_flags[model_name]
+                    record[f'{model_name}_has_hallucination'] = True  # Always true if in store
+                    record[f'{model_name}_repetition'] = flags.get('repetition', False)
+                    record[f'{model_name}_length_anomaly'] = flags.get('length_anomaly', False)
+                    record[f'{model_name}_char_repetition'] = flags.get('char_repetition', False)
+                    record[f'{model_name}_insertions'] = flags.get('insertions', False)
+                    record[f'{model_name}_stuttering'] = flags.get('stuttering', False)
+                    
+                    # Build info string from flags
+                    all_issues = []
+                    if flags.get('repetition', False):
+                        all_issues.append("Repetition detected")
+                    if flags.get('length_anomaly', False):
+                        all_issues.append("Length anomaly detected")
+                    if flags.get('char_repetition', False):
+                        all_issues.append("Char repetition detected")
+                    if flags.get('insertions', False):
+                        all_issues.append("Insertions detected")
+                    if flags.get('stuttering', False):
+                        all_issues.append("Stuttering detected")
+                    record[f'{model_name}_info'] = '; '.join(all_issues) if all_issues else ''
+                else:
+                    # Row not in store or model not in row flags = no hallucinations
+                    record[f'{model_name}_has_hallucination'] = False
+                    record[f'{model_name}_repetition'] = False
+                    record[f'{model_name}_length_anomaly'] = False
+                    record[f'{model_name}_char_repetition'] = False
+                    record[f'{model_name}_insertions'] = False
+                    record[f'{model_name}_stuttering'] = False
+                    record[f'{model_name}_info'] = ''
+                
+                record[col] = hypothesis  # Keep original column name for reference
+            
+            hallucination_data.append(record)
+        
+        df_hall = pd.DataFrame(hallucination_data)
         
         # Build column definitions for selected models
         columnDefs = [
@@ -417,9 +547,9 @@ def update_hallucinations_table(filter_hallucinations, selected_models, stored_d
         ]
         
         # Only add columns for selected models
-        selected_models = selected_models or []
-        for model_name in selected_models:
-            col = model_cols.get(model_name)
+        selected_models_list = selected_models or []
+        for model_name in selected_models_list:
+            col = model_name_to_col.get(model_name)
             if not col:
                 continue
             
@@ -430,10 +560,10 @@ def update_hallucinations_table(filter_hallucinations, selected_models, stored_d
                 "width": 80,
                 "cellRenderer": "agCheckboxCellRenderer",
                 "cellRendererParams": {"disabled": True},
-                "cellStyle": lambda params: {
-                    "backgroundColor": "#ffcccc" if params.value else "#ccffcc",
-                    "textAlign": "center"
-                } if params.value is not None else {}
+                "cellClassRules": {
+                    "hallucination-yes": "params.value === true",
+                    "hallucination-no": "params.value === false"
+                }
             })
             
             # Individual detection flags
@@ -446,17 +576,17 @@ def update_hallucinations_table(filter_hallucinations, selected_models, stored_d
             ]
             
             for flag_key, label, color in detection_flags:
+                # Create unique class name for this flag type
+                flag_class = f"flag-{flag_key.lower().replace('_', '-')}"
                 columnDefs.append({
                     "field": f"{model_name}_{flag_key}",
                     "headerName": f"{model_name} {label}",
                     "width": 70,
                     "cellRenderer": "agCheckboxCellRenderer",
                     "cellRendererParams": {"disabled": True},
-                    "cellStyle": lambda params, flag_color=color: {
-                        "backgroundColor": flag_color if params.value else "#f5f5f5",
-                        "textAlign": "center",
-                        "opacity": 0.7
-                    } if params.value is not None else {}
+                    "cellClassRules": {
+                        flag_class: "params.value === true"
+                    }
                 })
             
             # Details column
@@ -465,9 +595,9 @@ def update_hallucinations_table(filter_hallucinations, selected_models, stored_d
                 "headerName": f"{model_name} Details",
                 "width": 400,
                 "wrapText": True,
-                "cellStyle": lambda params: {
-                    "backgroundColor": "#fff3cd" if params.value else "white"
-                } if params.value else {}
+                "cellClassRules": {
+                    "has-details": "params.value && params.value.length > 0"
+                }
             })
             
             # Transcription column
@@ -568,7 +698,13 @@ def create_data_table(df):
     )
 
 def create_hallucinations_tab(df):
-    """Create the hallucination detection tab with filters and model selection"""
+    """Create the hallucination detection tab with filters and model selection
+    
+    Returns:
+        tuple: (html_content, hallucination_flags_dict)
+        - html_content: The tab UI layout
+        - hallucination_flags_dict: Lightweight dict mapping row_id -> {model: {flags}}
+    """
     if df is None or (hasattr(df, 'empty') and df.empty) or (hasattr(df, 'shape') and df.shape[0] == 0):
         return dbc.Spinner(
             html.Div(id="hallucinations-table-loading", style={"height": "600px"}),
@@ -587,15 +723,23 @@ def create_hallucinations_tab(df):
         
         # Calculate hallucination flags for each model
         hallucination_data = []
+        # Only store rows that have hallucinations: {row_id: {model: {flags}}}
+        # If a row_id is not in this dict, it means no hallucinations
+        hallucination_flags = {}
         
         for idx, row in df_processed.iterrows():
+            row_id = str(row.get('id', ''))
             record = {
-                'id': row.get('id', ''),
+                'id': row_id,
                 'split': row.get('split', ''),
                 'transcription': row.get('transcription', '')
             }
             
             reference = row.get('transcription', '')
+            
+            # Track if this row has any hallucinations (across any model)
+            row_has_hallucinations = False
+            row_model_flags = {}  # Only store models with hallucinations for this row
             
             # Check each whisper model for hallucinations
             for col in whisper_cols:
@@ -605,7 +749,19 @@ def create_hallucinations_tab(df):
                 # Detect hallucinations with all methods
                 hall_result = detect_hallucinations(hypothesis, reference)
                 
-                # Add flags to record
+                # Only store flags if this model has hallucinations
+                if hall_result['has_hallucination']:
+                    row_has_hallucinations = True
+                    row_model_flags[model_name] = {
+                        'has_hallucination': True,
+                        'repetition': hall_result['repetition']['detected'],
+                        'length_anomaly': hall_result['length_anomaly']['detected'],
+                        'char_repetition': hall_result['char_repetition']['detected'],
+                        'insertions': hall_result['insertions']['detected'],
+                        'stuttering': hall_result['stuttering']['detected']
+                    }
+                
+                # Add flags to record for DataFrame (always, for table display)
                 record[f'{model_name}_has_hallucination'] = hall_result['has_hallucination']
                 record[f'{model_name}_repetition'] = hall_result['repetition']['detected']
                 record[f'{model_name}_length_anomaly'] = hall_result['length_anomaly']['detected']
@@ -629,6 +785,10 @@ def create_hallucinations_tab(df):
                 
                 record[f'{model_name}_info'] = '; '.join(all_issues) if all_issues else ''
                 record[col] = hypothesis  # Keep original column name for reference
+            
+            # Only add this row to flags store if it has hallucinations
+            if row_has_hallucinations:
+                hallucination_flags[row_id] = row_model_flags
             
             hallucination_data.append(record)
         
@@ -774,10 +934,10 @@ def create_hallucinations_tab(df):
                 "width": 80,
                 "cellRenderer": "agCheckboxCellRenderer",
                 "cellRendererParams": {"disabled": True},
-                "cellStyle": lambda params: {
-                    "backgroundColor": "#ffcccc" if params.value else "#ccffcc",
-                    "textAlign": "center"
-                } if params.value is not None else {}
+                "cellClassRules": {
+                    "hallucination-yes": "params.value === true",
+                    "hallucination-no": "params.value === false"
+                }
             })
             
             # Individual detection flags
@@ -790,17 +950,17 @@ def create_hallucinations_tab(df):
             ]
             
             for flag_key, label, color in detection_flags:
+                # Create unique class name for this flag type
+                flag_class = f"flag-{flag_key.lower().replace('_', '-')}"
                 columnDefs.append({
                     "field": f"{model_name}_{flag_key}",
                     "headerName": f"{model_name} {label}",
                     "width": 70,
                     "cellRenderer": "agCheckboxCellRenderer",
                     "cellRendererParams": {"disabled": True},
-                    "cellStyle": lambda params, flag_color=color: {
-                        "backgroundColor": flag_color if params.value else "#f5f5f5",
-                        "textAlign": "center",
-                        "opacity": 0.7
-                    } if params.value is not None else {}
+                    "cellClassRules": {
+                        flag_class: "params.value === true"
+                    }
                 })
             
             # Details column
@@ -809,9 +969,9 @@ def create_hallucinations_tab(df):
                 "headerName": f"{model_name} Details",
                 "width": 400,
                 "wrapText": True,
-                "cellStyle": lambda params: {
-                    "backgroundColor": "#fff3cd" if params.value else "white"
-                } if params.value else {}
+                "cellClassRules": {
+                    "has-details": "params.value && params.value.length > 0"
+                }
             })
             
             # Transcription column
@@ -822,7 +982,7 @@ def create_hallucinations_tab(df):
                 "wrapText": True
             })
         
-        # Store the full data for filtering
+        # Initial table data (will be updated by callback)
         return html.Div([
             dbc.Row([
                 dbc.Col([
@@ -836,7 +996,7 @@ def create_hallucinations_tab(df):
                 children=dag.AgGrid(
                     id="hallucinations-grid",
                     columnDefs=columnDefs,
-                    rowData=df_hall.to_dict('records'),
+                    rowData=[],  # Empty initially, populated by callback
                     defaultColDef={
                         "resizable": True,
                         "sortable": True,
@@ -852,11 +1012,225 @@ def create_hallucinations_tab(df):
                     style={"height": "600px", "width": "100%"}
                 )
             )
-        ]), {"data": df_hall.to_dict('records'), "model_cols": model_name_to_col}
+        ]), hallucination_flags
         
     except Exception as e:
         logger.error(f"Error creating hallucinations tab: {e}")
         return html.Div(f"Error creating hallucinations table: {str(e)}"), None
+
+def create_models_tab():
+    """Create the models information tab with details about Whisper models"""
+    
+    # Whisper model specifications
+    models_data = [
+        {
+            "Model": "Tiny (English)",
+            "Full Name": "Whisper Tiny English",
+            "Parameters": "39M",
+            "Size": "~75 MB",
+            "Speed": "Fastest (real-time factor ~0.01-0.1x)",
+            "Multi-language": False,
+            "Accuracy": "Basic",
+            "Use Case": "Quick prototyping, low-latency applications",
+            "Notes": "English-only variant, optimized for speed"
+        },
+        {
+            "Model": "Base (English)",
+            "Full Name": "Whisper Base English",
+            "Parameters": "74M",
+            "Size": "~140 MB",
+            "Speed": "Very Fast (real-time factor ~0.1-0.3x)",
+            "Multi-language": False,
+            "Accuracy": "Good",
+            "Use Case": "Production applications requiring speed",
+            "Notes": "English-only variant, good speed/accuracy balance"
+        },
+        {
+            "Model": "Small (English)",
+            "Full Name": "Whisper Small English",
+            "Parameters": "244M",
+            "Size": "~460 MB",
+            "Speed": "Fast (real-time factor ~0.3-0.8x)",
+            "Multi-language": False,
+            "Accuracy": "Very Good",
+            "Use Case": "High-accuracy English transcription",
+            "Notes": "English-only variant, strong accuracy"
+        },
+        {
+            "Model": "Medium (English)",
+            "Full Name": "Whisper Medium English",
+            "Parameters": "769M",
+            "Size": "~1.5 GB",
+            "Speed": "Moderate (real-time factor ~0.8-2x)",
+            "Multi-language": False,
+            "Accuracy": "Excellent",
+            "Use Case": "High-quality English transcription",
+            "Notes": "English-only variant, excellent accuracy"
+        },
+        {
+            "Model": "Large",
+            "Full Name": "Whisper Large",
+            "Parameters": "1550M",
+            "Size": "~3 GB",
+            "Speed": "Slow (real-time factor ~2-5x)",
+            "Multi-language": True,
+            "Accuracy": "Best",
+            "Use Case": "Highest quality transcription, multi-language support",
+            "Notes": "Full multilingual model, best accuracy, slower inference"
+        },
+        {
+            "Model": "Turbo",
+            "Full Name": "Whisper Turbo",
+            "Parameters": "1550M",
+            "Size": "~3 GB",
+            "Speed": "Moderate-Fast (real-time factor ~0.5-1.5x)",
+            "Multi-language": True,
+            "Accuracy": "Excellent",
+            "Use Case": "High-quality transcription with faster inference",
+            "Notes": "Optimized version of Large model, 2-3x faster while maintaining accuracy"
+        }
+    ]
+    
+    # Create DataFrame for easier manipulation
+    models_df = pd.DataFrame(models_data)
+    
+    # Create a styled table using Plotly
+    table_fig = go.Figure(data=[go.Table(
+        header=dict(
+            values=["Model", "Parameters", "Size", "Inference Speed", "Multi-language", "Accuracy", "Use Case"],
+            fill_color='#2c3e50',
+            align='left',
+            font=dict(size=12, color='white', family='Arial', weight='bold'),
+            height=40
+        ),
+        cells=dict(
+            values=[
+                models_df['Model'],
+                models_df['Parameters'],
+                models_df['Size'],
+                models_df['Speed'],
+                models_df['Multi-language'].apply(lambda x: "✅ Yes" if x else "❌ No"),
+                models_df['Accuracy'],
+                models_df['Use Case']
+            ],
+            fill_color=[
+                ['white'] * len(models_df),
+                ['#f8f9fa'] * len(models_df),
+                ['white'] * len(models_df),
+                ['#f8f9fa'] * len(models_df),
+                ['white'] * len(models_df),
+                ['#f8f9fa'] * len(models_df),
+                ['white'] * len(models_df)
+            ],
+            align='left',
+            font=dict(size=11, color='black', family='Arial'),
+            height=35
+        )
+    )])
+    
+    table_fig.update_layout(
+        title=dict(
+            text="🤖 Whisper Model Specifications",
+            font=dict(size=18, family='Arial', color='#2c3e50'),
+            x=0.5
+        ),
+        height=400,
+        margin=dict(l=20, r=20, t=60, b=20)
+    )
+    
+    # Create detailed cards for each model
+    model_cards = []
+    for _, model in models_df.iterrows():
+        # Color code based on model size/accuracy
+        if "Tiny" in model['Model'] or "Base" in model['Model']:
+            card_color = "light"
+            header_color = "secondary"
+        elif "Small" in model['Model'] or "Medium" in model['Model']:
+            card_color = "info"
+            header_color = "info"
+        else:  # Large or Turbo
+            card_color = "primary"
+            header_color = "primary"
+        
+        lang_badge = dbc.Badge(
+            "🌍 Multilingual" if model['Multi-language'] else "🇺🇸 English Only",
+            color="success" if model['Multi-language'] else "warning",
+            className="me-2"
+        )
+        
+        card = dbc.Card([
+            dbc.CardHeader([
+                html.H5([
+                    model['Model'],
+                    " ",
+                    lang_badge
+                ], className="mb-0")
+            ], className=f"bg-{header_color} text-white"),
+            dbc.CardBody([
+                html.P([
+                    html.Strong("Full Name: "),
+                    model['Full Name']
+                ], className="mb-2"),
+                html.P([
+                    html.Strong("Parameters: "),
+                    model['Parameters']
+                ], className="mb-2"),
+                html.P([
+                    html.Strong("Model Size: "),
+                    model['Size']
+                ], className="mb-2"),
+                html.P([
+                    html.Strong("Inference Speed: "),
+                    model['Speed']
+                ], className="mb-2"),
+                html.P([
+                    html.Strong("Accuracy: "),
+                    dbc.Badge(model['Accuracy'], color="success", className="ms-1")
+                ], className="mb-2"),
+                html.P([
+                    html.Strong("Use Case: "),
+                    model['Use Case']
+                ], className="mb-2"),
+                html.P([
+                    html.Strong("Notes: "),
+                    html.Em(model['Notes'], style={"color": "#6c757d"})
+                ], className="mb-0")
+            ])
+        ], className="mb-3", color=card_color, outline=True)
+        
+        model_cards.append(dbc.Col(card, width=12, md=6, lg=4))
+    
+    return html.Div([
+        dbc.Row([
+            dbc.Col([
+                html.H4("Model Overview", className="mb-3"),
+                html.P([
+                    "This dataset uses OpenAI's Whisper models for automatic speech recognition (ASR). ",
+                    "Whisper is a family of transformer-based models trained on multilingual and multitask ",
+                    "supervised data. The models vary in size and capabilities, with trade-offs between ",
+                    "accuracy, speed, and computational requirements."
+                ], className="mb-4"),
+                dcc.Graph(figure=table_fig, config={'displayModeBar': False})
+            ], width=12)
+        ], className="mb-4"),
+        dbc.Row([
+            dbc.Col([
+                html.H4("Detailed Model Information", className="mb-3")
+            ], width=12)
+        ]),
+        dbc.Row(model_cards),
+        dbc.Row([
+            dbc.Col([
+                html.Hr(),
+                html.P([
+                    html.Strong("References: "),
+                    html.A("Whisper Paper", href="https://arxiv.org/abs/2212.04356", target="_blank", className="me-3"),
+                    html.A("OpenAI Whisper", href="https://github.com/openai/whisper", target="_blank", className="me-3"),
+                    html.A("Model Cards", href="https://huggingface.co/models?search=whisper", target="_blank")
+                ], className="text-muted small")
+            ], width=12)
+        ])
+    ])
 
 def create_analytics_tab(df):
     """Create the analytics tab with comprehensive WER analysis"""
