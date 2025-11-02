@@ -7,15 +7,18 @@ services:
       args:
         PIXELTABLE_API_KEY: ${PIXELTABLE_API_KEY}
         PIXELTABLE_DATASET_URL: ${PIXELTABLE_DATASET_URL:-pxt://speech-to-text-analytics:main/hani89_asr_dataset}
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
     ports:
-      - "8050:8050"
+      - "8060:8050"
     volumes:
-      - ./:/app # Bind mount for hot reload
+      - ./:/app # Bind mount for editing code
       - ../.env:/app/.env:ro
+      # Cache and data directories are internal to container (created in Dockerfile)
     environment:
       - PYTHONPATH=/app
-      - CACHE_DIR=/app/cache
-      - DATA_DIR=/app/data
+      - CACHE_DIR=/var/lib/app/cache
+      - DATA_DIR=/var/lib/app/data
     env_file:
       - ../.env
     restart: unless-stopped
@@ -33,8 +36,10 @@ services:
       args:
         PIXELTABLE_API_KEY: ${PIXELTABLE_API_KEY}
         PIXELTABLE_DATASET_URL: ${PIXELTABLE_DATASET_URL:-pxt://speech-to-text-analytics:main/hani89_asr_dataset}
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
     ports:
-      - "8050:8050"
+      - "8060:8050"
     volumes:
       - ./:/app # Bind mount the entire results_browser directory
       - ../.env:/app/.env:ro

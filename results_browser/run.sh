@@ -1,8 +1,20 @@
 #!/bin/bash
 
-# Script to manage the results browser with separate data and code containers
+# Script to manage the results browser
+# Auto-detects current user's UID/GID for container user matching
 
 set -e
+
+# Auto-detect current user's UID/GID (unless already set)
+if [ -z "$UID" ]; then
+    export UID=$(id -u)
+fi
+if [ -z "$GID" ]; then
+    export GID=$(id -g)
+fi
+
+echo "👤 Using UID=$UID, GID=$GID for container user"
+echo ""
 
 case "$1" in
     "up")
