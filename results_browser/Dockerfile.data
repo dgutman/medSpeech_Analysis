@@ -1,0 +1,37 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first for better caching
+COPY results_browser/requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy only the data preparation script
+COPY results_browser/preload_data.py .
+
+# Copy .env file for API key
+COPY .env /app/.env
+
+# Set environment variables
+ENV PYTHONPATH=/app
+
+# Accept build arguments for API key
+ARG PIXELTABLE_API_KEY
+ARG PIXELTABLE_DATASET_URL=pxt://speech-to-text-analytics:main/hani89_asr_dataset
+
+# Set environment variables for build
+ENV PIXELTABLE_API_KEY=${PIXELTABLE_API_KEY}
+ENV PIXELTABLE_DATASET_URL=${PIXELTABLE_DATASET_URL}
+
+# The data preparation will run as the command
+CMD ["python", "preload_data.py"]
+
+

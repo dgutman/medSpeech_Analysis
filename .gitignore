@@ -5,3 +5,6 @@ archived/
 .pxtData/
 *.wav
 .pxtDataV2/
+**.venv/*
+**.env/**
+.pyenv/

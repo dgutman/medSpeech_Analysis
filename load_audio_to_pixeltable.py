@@ -49,7 +49,7 @@ t = pxt.get_table('hani89_asr_data.transcribe_compare')
 ### TO DO: See if there is more elegant syntax for this
 alreadyLoadedFiles = t.select(t.filePath).collect()['filePath']
 
-recordsToLoad = 100
+recordsToLoad = 1500
 
 startTime = datetime.now()
 

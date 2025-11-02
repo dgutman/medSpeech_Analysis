@@ -1,0 +1,48 @@
+services:
+  # Main application service with integrated data preparation
+  results-browser:
+    build:
+      context: ..
+      dockerfile: results_browser/Dockerfile
+      args:
+        PIXELTABLE_API_KEY: ${PIXELTABLE_API_KEY}
+        PIXELTABLE_DATASET_URL: ${PIXELTABLE_DATASET_URL:-pxt://speech-to-text-analytics:main/hani89_asr_dataset}
+    ports:
+      - "8050:8050"
+    volumes:
+      - ./:/app # Bind mount for hot reload
+      - ../.env:/app/.env:ro
+    environment:
+      - PYTHONPATH=/app
+      - CACHE_DIR=/app/cache
+      - DATA_DIR=/app/data
+    env_file:
+      - ../.env
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8050/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Development service with bind mounts
+  results-browser-dev:
+    build:
+      context: ..
+      dockerfile: results_browser/Dockerfile
+      args:
+        PIXELTABLE_API_KEY: ${PIXELTABLE_API_KEY}
+        PIXELTABLE_DATASET_URL: ${PIXELTABLE_DATASET_URL:-pxt://speech-to-text-analytics:main/hani89_asr_dataset}
+    ports:
+      - "8050:8050"
+    volumes:
+      - ./:/app # Bind mount the entire results_browser directory
+      - ../.env:/app/.env:ro
+    environment:
+      - PYTHONPATH=/app
+      - CACHE_DIR=/app/cache
+      - DATA_DIR=/app/data
+    env_file:
+      - ../.env
+    command: [ "./startup.sh" ]
+    profiles: [ "dev" ] # Only run when explicitly requested
