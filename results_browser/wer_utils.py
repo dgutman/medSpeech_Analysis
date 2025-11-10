@@ -197,20 +197,144 @@ def detect_length_anomaly(hypothesis, reference, min_ratio=0.5, max_ratio=2.0):
         return {'has_anomaly': False, 'anomaly_type': None, 'length_info': ''}
 
 
+def detect_character_repetition(hypothesis, min_char_repeat=5):
+    """
+    Detect character-level repetition (e.g., "the the the", character stuttering).
+    
+    Args:
+        hypothesis: Model output text
+        min_char_repeat: Minimum number of characters that repeat (default: 5)
+    
+    Returns:
+        Dictionary with 'has_repetition' and 'info'
+    """
+    if pd.isna(hypothesis) or hypothesis == '':
+        return {'has_repetition': False, 'info': ''}
+    
+    try:
+        hypothesis_str = str(hypothesis).strip()
+        if len(hypothesis_str) < min_char_repeat * 2:
+            return {'has_repetition': False, 'info': ''}
+        
+        # Check for repeated character sequences
+        for i in range(len(hypothesis_str) - min_char_repeat * 2):
+            seq = hypothesis_str[i:i+min_char_repeat]
+            # Check if this sequence repeats immediately
+            if i + min_char_repeat * 2 <= len(hypothesis_str):
+                next_seq = hypothesis_str[i+min_char_repeat:i+min_char_repeat*2]
+                if seq == next_seq:
+                    return {
+                        'has_repetition': True,
+                        'info': f"Character repetition: '{seq}' repeated"
+                    }
+        
+        return {'has_repetition': False, 'info': ''}
+    except Exception as e:
+        logger.warning(f"Error detecting character repetition: {e}")
+        return {'has_repetition': False, 'info': ''}
+
+
+def detect_unlikely_insertions(hypothesis, reference, wer_threshold=0.8):
+    """
+    Detect when hypothesis has very high insertion rate (potential hallucination).
+    Uses WER and word count comparison to identify excessive insertions.
+    
+    Args:
+        hypothesis: Model output text
+        reference: Ground truth text
+        wer_threshold: WER threshold above which to flag (default: 0.8)
+    
+    Returns:
+        Dictionary with 'has_insertion' and 'info'
+    """
+    if pd.isna(hypothesis) or pd.isna(reference) or hypothesis == '' or reference == '':
+        return {'has_insertion': False, 'info': ''}
+    
+    try:
+        wer = calculate_wer(hypothesis, reference)
+        if pd.isna(wer):
+            return {'has_insertion': False, 'info': ''}
+        
+        hyp_words = len(str(hypothesis).split())
+        ref_words = len(str(reference).split())
+        
+        if ref_words == 0:
+            return {'has_insertion': False, 'info': ''}
+        
+        # High WER combined with significantly more words suggests insertions
+        word_ratio = hyp_words / ref_words if ref_words > 0 else 0
+        if wer > wer_threshold and word_ratio > 1.5:
+            return {
+                'has_insertion': True,
+                'info': f"High WER ({wer:.2f}) with {word_ratio:.1f}x word count suggests insertions"
+            }
+        
+        return {'has_insertion': False, 'info': ''}
+    except Exception as e:
+        logger.warning(f"Error detecting insertions: {e}")
+        return {'has_insertion': False, 'info': ''}
+
+
+def detect_word_stuttering(hypothesis, min_stutter=3):
+    """
+    Detect word-level stuttering (same word repeated many times).
+    
+    Args:
+        hypothesis: Model output text
+        min_stutter: Minimum number of times a word must repeat (default: 3)
+    
+    Returns:
+        Dictionary with 'has_stuttering' and 'info'
+    """
+    if pd.isna(hypothesis) or hypothesis == '':
+        return {'has_stuttering': False, 'info': ''}
+    
+    try:
+        words = str(hypothesis).strip().split()
+        if len(words) < min_stutter:
+            return {'has_stuttering': False, 'info': ''}
+        
+        # Check for consecutive repeated words
+        current_word = None
+        count = 1
+        for word in words:
+            if word == current_word:
+                count += 1
+                if count >= min_stutter:
+                    return {
+                        'has_stuttering': True,
+                        'info': f"Word stuttering: '{word}' repeated {count} times"
+                    }
+            else:
+                current_word = word
+                count = 1
+        
+        return {'has_stuttering': False, 'info': ''}
+    except Exception as e:
+        logger.warning(f"Error detecting word stuttering: {e}")
+        return {'has_stuttering': False, 'info': ''}
+
+
 def detect_hallucinations(hypothesis, reference, check_repetition=True, check_length=True, 
-                          min_repeat_length=3, min_repeats=2, min_ratio=0.5, max_ratio=2.0):
+                          check_char_repetition=True, check_insertions=True, check_stuttering=True,
+                          min_repeat_length=3, min_repeats=2, min_ratio=0.5, max_ratio=2.0,
+                          wer_threshold=0.8):
     """
     Comprehensive hallucination detection combining multiple methods.
     
     Args:
         hypothesis: Model output text
         reference: Ground truth text
-        check_repetition: Whether to check for repetitions (default: True)
+        check_repetition: Whether to check for phrase repetitions (default: True)
         check_length: Whether to check for length anomalies (default: True)
+        check_char_repetition: Whether to check for character-level repetition (default: True)
+        check_insertions: Whether to check for unlikely insertions (default: True)
+        check_stuttering: Whether to check for word stuttering (default: True)
         min_repeat_length: Minimum phrase length for repetition detection (default: 3)
         min_repeats: Minimum number of repeats (default: 2)
         min_ratio: Minimum length ratio (default: 0.5)
         max_ratio: Maximum length ratio (default: 2.0)
+        wer_threshold: WER threshold for insertion detection (default: 0.8)
     
     Returns:
         Dictionary with flags and details for all detected hallucinations
@@ -218,7 +342,10 @@ def detect_hallucinations(hypothesis, reference, check_repetition=True, check_le
     result = {
         'has_hallucination': False,
         'repetition': {'detected': False, 'info': ''},
-        'length_anomaly': {'detected': False, 'type': None, 'info': ''}
+        'length_anomaly': {'detected': False, 'type': None, 'info': ''},
+        'char_repetition': {'detected': False, 'info': ''},
+        'insertions': {'detected': False, 'info': ''},
+        'stuttering': {'detected': False, 'info': ''}
     }
     
     if check_repetition:
@@ -238,6 +365,33 @@ def detect_hallucinations(hypothesis, reference, check_repetition=True, check_le
             'info': len_result['length_info']
         }
         if len_result['has_anomaly']:
+            result['has_hallucination'] = True
+    
+    if check_char_repetition:
+        char_result = detect_character_repetition(hypothesis)
+        result['char_repetition'] = {
+            'detected': char_result['has_repetition'],
+            'info': char_result['info']
+        }
+        if char_result['has_repetition']:
+            result['has_hallucination'] = True
+    
+    if check_insertions:
+        ins_result = detect_unlikely_insertions(hypothesis, reference, wer_threshold)
+        result['insertions'] = {
+            'detected': ins_result['has_insertion'],
+            'info': ins_result['info']
+        }
+        if ins_result['has_insertion']:
+            result['has_hallucination'] = True
+    
+    if check_stuttering:
+        stut_result = detect_word_stuttering(hypothesis)
+        result['stuttering'] = {
+            'detected': stut_result['has_stuttering'],
+            'info': stut_result['info']
+        }
+        if stut_result['has_stuttering']:
             result['has_hallucination'] = True
     
     return result

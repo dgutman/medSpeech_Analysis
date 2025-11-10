@@ -1,17 +1,31 @@
 #!/bin/bash
 
-# Script to manage the results browser with separate data and code containers
+# Script to manage the results browser
+# Auto-detects current user's UID/GID for container user matching
 
 set -e
+
+# Auto-detect current user's UID/GID (unless already set)
+if [ -z "$UID" ]; then
+    export UID=$(id -u)
+fi
+if [ -z "$GID" ]; then
+    export GID=$(id -g)
+fi
+
+echo "👤 Using UID=$UID, GID=$GID for container user"
+echo ""
 
 case "$1" in
     "up")
         echo "🚀 Starting results browser (data prep happens automatically)..."
-        docker compose up results-browser
+        shift  # Remove "up" from arguments
+        docker compose up results-browser "$@"
         ;;
     "dev")
         echo "🚀 Starting results browser in development mode (with bind mounts)..."
-        docker compose --profile dev up results-browser-dev
+        shift  # Remove "dev" from arguments
+        docker compose --profile dev up results-browser-dev "$@"
         ;;
     "build")
         echo "🔨 Building application container (includes data prep)..."
@@ -43,7 +57,9 @@ case "$1" in
         echo ""
         echo "Typical workflow:"
         echo "  1. Development: ./run.sh dev (changes are live, no rebuild needed)"
+        echo "     Detached:    ./run.sh dev -d"
         echo "  2. Production:  ./run.sh up"
+        echo "     Detached:    ./run.sh up -d"
         exit 1
         ;;
 esac
