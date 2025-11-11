@@ -8,9 +8,11 @@ cd "$SCRIPT_DIR"
 
 # Configuration
 API_URL="${API_URL:-http://localhost:8000}"
-# Default to 40 workers to match 40 replicas (10 per GPU)
-# Adjust this to match your NUM_REPLICAS setting
-MAX_WORKERS="${MAX_WORKERS:-40}"  # Number of parallel requests (should match NUM_REPLICAS)
+# Default to 200 workers to fully saturate 40 replicas
+# With 40 replicas × 1 concurrent = 40 concurrent capacity
+# Requests complete in ~0.5s, so we need many workers to keep queue full
+# More workers = more concurrent HTTP connections = better chance of hitting all replicas
+MAX_WORKERS="${MAX_WORKERS:-200}"  # Number of parallel HTTP connections (5x replicas to saturate)
 MONITOR_INTERVAL="${MONITOR_INTERVAL:-1.0}"  # GPU monitoring interval in seconds
 MODEL="${MODEL:-}"  # Optional: model to use (e.g., "large-v3", "base", "tiny"). Empty = use server default
 
@@ -48,7 +50,8 @@ echo ""
 echo "Starting stress test..."
 echo ""
 
-# Export MODEL so stress_test.py can use it
+# Export environment variables so stress_test.py can use them
+export MAX_WORKERS
 export MODEL
 
 python3 stress_test.py

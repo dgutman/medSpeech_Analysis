@@ -73,13 +73,24 @@ def transcribe_file(file_name: str, api_url: str, model: Optional[str] = None) -
         if model:
             request_data["model"] = model
         
-        response = requests.post(
-            f"{api_url}/transcribe/path",
-            json=request_data,
-            timeout=300  # 5 minute timeout per file
-        )
-        response.raise_for_status()
-        result = response.json()
+        # Use a new session for each request to avoid connection pooling
+        # This forces Ray Serve to route to different replicas
+        session = requests.Session()
+        # Disable connection pooling to force new connections
+        adapter = requests.adapters.HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=0)
+        session.mount('http://', adapter)
+        session.mount('https://', adapter)
+        
+        try:
+            response = session.post(
+                f"{api_url}/transcribe/path",
+                json=request_data,
+                timeout=300  # 5 minute timeout per file
+            )
+            response.raise_for_status()
+            result = response.json()
+        finally:
+            session.close()
         
         total_time = time.time() - start_time
         
@@ -162,6 +173,7 @@ def run_stress_test(data_dir: str, api_url: str, max_workers: int = 4, model: Op
         # Process results as they complete (they'll come back in parallel)
         completed = 0
         in_flight = len(future_to_file)
+        throughput_report_interval = 100  # Report throughput every N files
         
         for future in as_completed(future_to_file):
             file_name = future_to_file[future]
@@ -170,6 +182,23 @@ def run_stress_test(data_dir: str, api_url: str, max_workers: int = 4, model: Op
                 result = future.result()
                 results.append(result)
                 completed += 1
+                
+                # Calculate and report throughput every N files
+                if completed % throughput_report_interval == 0:
+                    elapsed = time.time() - start_time
+                    throughput = completed / elapsed if elapsed > 0 else 0
+                    remaining = total_files - completed
+                    eta_seconds = remaining / throughput if throughput > 0 else 0
+                    eta_minutes = eta_seconds / 60
+                    
+                    print(f"\n{'='*80}")
+                    print(f"📊 Throughput Report (at {completed}/{total_files} files)")
+                    print(f"{'='*80}")
+                    print(f"  Elapsed time: {elapsed:.1f}s ({elapsed/60:.1f} minutes)")
+                    print(f"  Throughput: {throughput:.2f} files/second")
+                    print(f"  Remaining: {remaining} files")
+                    print(f"  Estimated time remaining: {eta_minutes:.1f} minutes ({eta_seconds:.0f} seconds)")
+                    print(f"{'='*80}\n")
                 
                 # Take GPU snapshot every 500 files
                 if completed % snapshot_interval == 0:
@@ -185,15 +214,9 @@ def run_stress_test(data_dir: str, api_url: str, max_workers: int = 4, model: Op
                             print(f"GPU{gpu['index']}: {gpu['memory_used_mb']}MB ({gpu['memory_used_percent']:.1f}%) ", end="")
                         print()
                 
-                status_icon = "✓" if result["status"] == "success" else "✗"
-                print(f"[{completed}/{total_files}] {status_icon} {file_name[:50]:<50} "
-                      f"Total: {result['total_time_seconds']:.2f}s | "
-                      f"Inference: {result['inference_time_seconds']:.2f}s | "
-                      f"Audio: {result['audio_duration']:.1f}s | "
-                      f"In-flight: {in_flight}")
-                
-                if result["status"] == "error":
-                    print(f"    Error: {result['error']}")
+                # Only print errors, not every successful file (too verbose and slows down output)
+                if result["status"] != "success":
+                    print(f"[{completed}/{total_files}] ✗ ERROR: {file_name} - {result.get('error', 'Unknown error')}")
             except Exception as e:
                 completed += 1
                 in_flight -= 1

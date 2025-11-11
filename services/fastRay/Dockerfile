@@ -33,16 +33,17 @@ RUN chmod +x start.sh start_serve.py preload_model.py
 RUN --mount=type=cache,target=/root/.cache/huggingface \
     python3 preload_model.py || echo "Model preload failed, will download at runtime"
 
-# Ray Serve listens on 8000, Ray dashboard on 8265
-EXPOSE 8000 8265
+# Ray Serve listens on 8000, Ray dashboard on 8265 (or 8266 if 8265 is in use)
+EXPOSE 8000 8265 8266
 
 # Environment knobs
 # L40S GPUs: Optimized for Ada Lovelace architecture (compute capability 8.9)
-# To use multiple GPUs, set NUM_REPLICAS=4 (one per GPU) or adjust as needed
+# NUM_REPLICAS and NUM_GPUS_PER_REPLICA should be set at runtime via docker run -e
+# Examples:
+#   - 1 replica per GPU (4 total):  NUM_REPLICAS=4  NUM_GPUS_PER_REPLICA=1
+#   - 10 replicas per GPU (40 total): NUM_REPLICAS=40 NUM_GPUS_PER_REPLICA=0.1
 ENV WHISPER_MODEL=large-v3 \
     COMPUTE_TYPE=float16 \
-    NUM_REPLICAS=1 \
-    NUM_GPUS_PER_REPLICA=1 \
     LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/cuda/compat:/usr/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH} \
     CUDA_HOME=/usr/local/cuda \
     NVIDIA_VISIBLE_DEVICES=all \

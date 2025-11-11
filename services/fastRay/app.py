@@ -70,10 +70,12 @@ class BatchPathJob(BaseModel):
         # 1 GPU per replica; change to 0 if you want CPU-only
         "num_gpus": float(os.environ.get("NUM_GPUS_PER_REPLICA", "1")),
     },
-    # Limit concurrent requests per replica to force better load balancing
-    # Lower values encourage Ray Serve to use more replicas
-    # With 40 replicas, each can handle 1-2 requests concurrently
-    max_ongoing_requests=int(os.environ.get("MAX_ONGOING_REQUESTS", "2")),
+    # Allow multiple concurrent requests per replica to increase throughput
+    # NOTE: Ray Serve routing is uneven (only 1 replica getting requests)
+    # So we need to allow that replica to handle many concurrent requests
+    # With max_ongoing_requests=5, the busy replica can handle 5 at once
+    # This should get us closer to 40-50 files/sec even with bad routing
+    max_ongoing_requests=int(os.environ.get("MAX_ONGOING_REQUESTS", "5")),
 )
 @serve.ingress(api)
 class WhisperService:

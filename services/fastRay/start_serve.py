@@ -26,6 +26,18 @@ signal.signal(signal.SIGINT, signal_handler)
 print("Starting Ray Serve and deploying application...")
 print("Ray Serve will be available at http://0.0.0.0:8000 once ready")
 
+# Connect to existing Ray cluster (started by start.sh)
+# IMPORTANT: We must connect to the existing cluster, not start a new one
+import ray
+try:
+    # Try to connect to existing Ray cluster
+    ray.init(address="auto", ignore_reinit_error=True)
+    print("Connected to existing Ray cluster")
+except Exception as e:
+    print(f"Warning: Could not connect to existing Ray cluster: {e}")
+    print("Starting new Ray cluster (this should not happen)")
+    ray.init()
+
 # Start Serve with HTTP host explicitly set to 0.0.0.0
 # Configure routing policy for better load balancing
 # Check if Serve is already running
