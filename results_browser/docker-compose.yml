@@ -41,7 +41,10 @@ services:
     ports:
       - "8060:8050"
     volumes:
-      - ./:/app # Bind mount the entire results_browser directory
+      # Mount the entire directory for code editing, but overlay venv with a named volume
+      # This prevents the host's venv from interfering with container's Python packages
+      - ./:/app
+      - results-browser-venv:/app/venv  # Overlay venv with empty volume to hide host's venv
       - ../.env:/app/.env:ro
     environment:
       - PYTHONPATH=/app
@@ -51,3 +54,8 @@ services:
       - ../.env
     command: [ "./startup.sh" ]
     profiles: [ "dev" ] # Only run when explicitly requested
+
+volumes:
+  results-browser-venv:
+  results-browser-cache:
+  results-browser-data:

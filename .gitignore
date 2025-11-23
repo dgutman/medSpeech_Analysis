@@ -8,3 +8,4 @@ archived/
 **.venv/*
 **.env/**
 .pyenv/
+.pyenvTrain/

@@ -13,6 +13,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 import statistics
 
+# Try to import psutil for CPU metrics (optional)
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
+    print("Warning: psutil not available. CPU metrics will be limited.")
+
 # Configuration
 API_URL = os.environ.get("API_URL", "http://localhost:8000")
 # Default to the host path that maps to container's /data
@@ -55,6 +63,37 @@ def get_gpu_snapshot() -> List[Dict]:
     except Exception as e:
         print(f"Warning: Could not get GPU snapshot: {e}")
     return None
+
+def get_cpu_snapshot() -> Optional[Dict]:
+    """Get current CPU utilization snapshot."""
+    if not PSUTIL_AVAILABLE:
+        return None
+    
+    try:
+        # Get overall CPU usage
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        cpu_count = psutil.cpu_count()
+        
+        # Get per-CPU usage
+        cpu_per_core = psutil.cpu_percent(interval=0.1, percpu=True)
+        
+        # Get load average (Linux)
+        try:
+            load_avg = os.getloadavg()
+        except:
+            load_avg = (0, 0, 0)
+        
+        return {
+            "cpu_percent": round(cpu_percent, 1),
+            "cpu_count": cpu_count,
+            "cpu_per_core": [round(c, 1) for c in cpu_per_core],
+            "load_avg_1min": round(load_avg[0], 2) if len(load_avg) > 0 else 0,
+            "load_avg_5min": round(load_avg[1], 2) if len(load_avg) > 1 else 0,
+            "load_avg_15min": round(load_avg[2], 2) if len(load_avg) > 2 else 0,
+        }
+    except Exception as e:
+        print(f"Warning: Could not get CPU snapshot: {e}")
+        return None
 
 def transcribe_file(file_name: str, api_url: str, model: Optional[str] = None) -> Dict:
     """Transcribe a single file and return results with timing."""
@@ -148,8 +187,9 @@ def run_stress_test(data_dir: str, api_url: str, max_workers: int = 4, model: Op
     start_time = time.time()
     results = []
     
-    # Get GPU memory snapshot at start
+    # Get GPU and CPU snapshots at start
     gpu_snapshot_start = get_gpu_snapshot()
+    cpu_snapshot_start = get_cpu_snapshot()
     
     # Track periodic snapshots (every 500 files)
     gpu_snapshots_periodic = []
@@ -200,19 +240,23 @@ def run_stress_test(data_dir: str, api_url: str, max_workers: int = 4, model: Op
                     print(f"  Estimated time remaining: {eta_minutes:.1f} minutes ({eta_seconds:.0f} seconds)")
                     print(f"{'='*80}\n")
                 
-                # Take GPU snapshot every 500 files
+                # Take GPU and CPU snapshots every 500 files
                 if completed % snapshot_interval == 0:
-                    snapshot = get_gpu_snapshot()
-                    if snapshot:
-                        gpu_snapshots_periodic.append({
-                            "completed_files": completed,
-                            "timestamp": datetime.now().isoformat(),
-                            "gpus": snapshot
-                        })
-                        print(f"  [GPU Snapshot at {completed} files] ", end="")
-                        for gpu in snapshot:
-                            print(f"GPU{gpu['index']}: {gpu['memory_used_mb']}MB ({gpu['memory_used_percent']:.1f}%) ", end="")
-                        print()
+                    gpu_snapshot = get_gpu_snapshot()
+                    cpu_snapshot = get_cpu_snapshot()
+                    
+                    snapshot_data = {
+                        "completed_files": completed,
+                        "timestamp": datetime.now().isoformat(),
+                    }
+                    if gpu_snapshot:
+                        snapshot_data["gpus"] = gpu_snapshot
+                    if cpu_snapshot:
+                        snapshot_data["cpu"] = cpu_snapshot
+                    
+                    if gpu_snapshot or cpu_snapshot:
+                        gpu_snapshots_periodic.append(snapshot_data)
+                        # Metrics are saved to JSON, but not printed to console to reduce verbosity
                 
                 # Only print errors, not every successful file (too verbose and slows down output)
                 if result["status"] != "success":
@@ -227,8 +271,9 @@ def run_stress_test(data_dir: str, api_url: str, max_workers: int = 4, model: Op
                     "error": str(e)
                 })
     
-    # Get GPU snapshot at end
+    # Get GPU and CPU snapshots at end
     gpu_snapshot_end = get_gpu_snapshot()
+    cpu_snapshot_end = get_cpu_snapshot()
     
     total_time = time.time() - start_time
     
@@ -322,6 +367,11 @@ def run_stress_test(data_dir: str, api_url: str, max_workers: int = 4, model: Op
                 "end": gpu_snapshot_end,
                 "periodic": gpu_snapshots_periodic,  # Snapshots every 500 files
             },
+            "cpu_snapshots": {
+                "start": cpu_snapshot_start,
+                "end": cpu_snapshot_end,
+                "periodic": [s.get("cpu") for s in gpu_snapshots_periodic if "cpu" in s],  # CPU data from periodic snapshots
+            },
             "summary": {
                 "total_files": total_files,
                 "successful": len(successful),
@@ -334,7 +384,9 @@ def run_stress_test(data_dir: str, api_url: str, max_workers: int = 4, model: Op
     print()
     print(f"Detailed results saved to: {output_file}")
     if gpu_snapshot_start or gpu_snapshot_end:
-        print("GPU memory snapshots (start/end) included in results file")
+        print("GPU snapshots (start/end) included in results file")
+    if cpu_snapshot_start or cpu_snapshot_end:
+        print("CPU snapshots (start/end) included in results file")
 
 if __name__ == "__main__":
     run_stress_test(DATA_DIR, API_URL, MAX_WORKERS, MODEL)

@@ -6,6 +6,9 @@ load_dotenv()
 
 t = pxt.get_table('hani89_asr_data.transcribe_compare')
 
-
-# Publish to cloud (make it shareable)
-pxt.publish(t, "pxt://speech-to-text-analytics/hani89_asr_dataset", access='private')
+#t.push()
+# #t.count()
+# print(t.count())
+# # Publish to cloud (make it shareable)
+pxt.publish(t, "pxt://speech-to-text-analytics/hani89_asr_dataset_v1", access='public')
+# # ## So how does versioning/latest_work

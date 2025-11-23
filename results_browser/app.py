@@ -96,6 +96,14 @@ def load_pixeltable_data():
             logger.info("Loading data from local table...")
             df = local_table.collect().to_pandas()
             
+            # Remove duplicate entries based on 'id' column (keep first occurrence)
+            if 'id' in df.columns:
+                initial_count = len(df)
+                df = df.drop_duplicates(subset=['id'], keep='first')
+                final_count = len(df)
+                if initial_count != final_count:
+                    logger.warning(f"Removed {initial_count - final_count} duplicate entries (based on 'id' column)")
+            
             cached_data = df
             cache_timestamp = datetime.now()
             
@@ -188,41 +196,6 @@ app.layout = dbc.Container([
                    className="text-center mb-2 text-primary")
         ])
     ]),
-    
-    # Control Panel
-    dbc.Row([
-        dbc.Col([
-            dbc.Card([
-                dbc.CardHeader("📊 Dataset Overview", className="py-2"),
-                dbc.CardBody([
-                    html.Div(id="dataset-stats", className="py-1")
-                ], className="py-2")
-            ], className="mb-1")
-        ], width=6),
-        dbc.Col([
-            dbc.Card([
-                dbc.CardHeader("🔍 Filters", className="py-2"),
-                dbc.CardBody([
-                    dbc.Row([
-                        dbc.Col([
-                            dcc.Dropdown(
-                                id="split-filter",
-                                placeholder="Filter by split...",
-                                clearable=True
-                            )
-                        ], width=6),
-                        dbc.Col([
-                            dbc.Input(
-                                id="search-input",
-                                placeholder="Search transcriptions...",
-                                type="text"
-                            )
-                        ], width=6)
-                    ], className="g-2")
-                ], className="py-2")
-            ], className="mb-1")
-        ], width=6)
-    ], className="mb-1"),
     
     # Main Content Tabs
     dbc.Row([
@@ -419,16 +392,19 @@ def handle_sample_id_input(n_submit, sample_id_input, current_id):
 @app.callback(
     [Output("hallucinations-grid", "rowData"),
      Output("hallucinations-grid", "columnDefs")],
-    [Input("hallucinations-filter-checkbox", "value"),
-     Input("hallucinations-model-selector", "value"),
-     Input("main-tabs", "active_tab"),
+    [Input("main-tabs", "active_tab"),
      Input("split-filter", "value"),
      Input("search-input", "value"),
      Input("hallucinations-flags-store", "data")],
     prevent_initial_call=False
 )
-def update_hallucinations_table(filter_hallucinations, selected_models, active_tab, split_filter, search_term, hallucination_flags):
-    """Filter hallucinations table based on checkbox and model selection
+def update_hallucinations_table(active_tab, split_filter, search_term, hallucination_flags):
+    """Update hallucinations table with flattened structure
+    
+    Creates one row per hallucination instance (message + model combination).
+    Only messages with hallucinations are shown. If a message has hallucinations
+    in multiple models, each model's hallucination appears as a separate row.
+    This makes filtering and analysis much easier.
     
     Uses lightweight hallucination_flags store to efficiently filter rows before processing.
     """
@@ -451,20 +427,8 @@ def update_hallucinations_table(filter_hallucinations, selected_models, active_t
         
         # Filter rows using lightweight flags store BEFORE processing
         # Only rows with hallucinations are in the flags store
-        if filter_hallucinations and "filter" in filter_hallucinations:
-            # Only keep rows that have hallucinations in selected models
-            selected_models_list = selected_models or []
-            if selected_models_list:
-                row_ids_with_hallucinations = set()
-                # Only iterate through rows that have hallucinations (stored in flags)
-                for row_id, model_flags in hallucination_flags.items():
-                    # Check if any selected model has a hallucination for this row
-                    for model_name in selected_models_list:
-                        if model_name in model_flags:  # Model has hallucination if it's in the flags
-                            row_ids_with_hallucinations.add(row_id)
-                            break
-                # Filter dataframe to only rows with hallucinations
-                df = df[df['id'].astype(str).isin(row_ids_with_hallucinations)]
+        # Note: We always filter to only rows with hallucinations (that's the point of this tab)
+        # The model selection filter is applied later when creating flattened rows
         
         # Now process only the filtered rows
         df_processed = df.copy()
@@ -478,135 +442,73 @@ def update_hallucinations_table(filter_hallucinations, selected_models, active_t
             model_name = col.replace('whisper_', '').replace('_transcription', '').replace('_', ' ').title()
             model_name_to_col[model_name] = col
         
-        # Calculate full data only for filtered rows (we already have flags, but need full records)
+        # Flatten data: create one row per hallucination (message + model combination)
+        # Only include rows that have hallucinations
         hallucination_data = []
         
         for idx, row in df_processed.iterrows():
             row_id = str(row.get('id', ''))
-            record = {
-                'id': row_id,
-                'split': row.get('split', ''),
-                'transcription': row.get('transcription', '')
-            }
             
-            reference = row.get('transcription', '')
+            # Only process rows that have hallucinations
+            if row_id not in hallucination_flags:
+                continue
             
-            # Get flags from store (if row has hallucinations, it will be in the store)
-            row_flags = hallucination_flags.get(row_id, {})
+            row_flags = hallucination_flags[row_id]
             
-            # Check each whisper model for hallucinations
-            for col in whisper_cols:
-                model_name = col.replace('whisper_', '').replace('_transcription', '').replace('_', ' ').title()
-                hypothesis = row.get(col, '')
+            # Create one row per model that has a hallucination
+            for model_name, flags in row_flags.items():
+                # Create a flattened record for this hallucination
+                record = {
+                    'id': row_id,
+                    'split': row.get('split', ''),
+                    'transcription': row.get('transcription', ''),
+                    'model': model_name,
+                    'model_transcription': flags.get('hypothesis', ''),
+                    'has_hallucination': True,  # Always true since we only show hallucinations
+                    'repetition': flags.get('repetition', False),
+                    'length_anomaly': flags.get('length_anomaly', False),
+                    'char_repetition': flags.get('char_repetition', False),
+                    'insertions': flags.get('insertions', False),
+                    'stuttering': flags.get('stuttering', False),
+                    'info': flags.get('info', '')
+                }
                 
-                # Use flags from store if available, otherwise no hallucinations
-                if row_id in hallucination_flags and model_name in row_flags:
-                    # Use stored flags (this model has hallucinations)
-                    flags = row_flags[model_name]
-                    record[f'{model_name}_has_hallucination'] = True  # Always true if in store
-                    record[f'{model_name}_repetition'] = flags.get('repetition', False)
-                    record[f'{model_name}_length_anomaly'] = flags.get('length_anomaly', False)
-                    record[f'{model_name}_char_repetition'] = flags.get('char_repetition', False)
-                    record[f'{model_name}_insertions'] = flags.get('insertions', False)
-                    record[f'{model_name}_stuttering'] = flags.get('stuttering', False)
-                    
-                    # Build info string from flags
-                    all_issues = []
-                    if flags.get('repetition', False):
-                        all_issues.append("Repetition detected")
-                    if flags.get('length_anomaly', False):
-                        all_issues.append("Length anomaly detected")
-                    if flags.get('char_repetition', False):
-                        all_issues.append("Char repetition detected")
-                    if flags.get('insertions', False):
-                        all_issues.append("Insertions detected")
-                    if flags.get('stuttering', False):
-                        all_issues.append("Stuttering detected")
-                    record[f'{model_name}_info'] = '; '.join(all_issues) if all_issues else ''
-                else:
-                    # Row not in store or model not in row flags = no hallucinations
-                    record[f'{model_name}_has_hallucination'] = False
-                    record[f'{model_name}_repetition'] = False
-                    record[f'{model_name}_length_anomaly'] = False
-                    record[f'{model_name}_char_repetition'] = False
-                    record[f'{model_name}_insertions'] = False
-                    record[f'{model_name}_stuttering'] = False
-                    record[f'{model_name}_info'] = ''
-                
-                record[col] = hypothesis  # Keep original column name for reference
-            
-            hallucination_data.append(record)
+                hallucination_data.append(record)
         
         df_hall = pd.DataFrame(hallucination_data)
         
-        # Build column definitions for selected models
+        # Return empty if no hallucinations found
+        if df_hall.empty:
+            return [], []
+        
+        # Build column definitions for flattened structure
         columnDefs = [
             {"field": "id", "headerName": "ID", "width": 150, "pinned": "left"},
             {"field": "split", "headerName": "Split", "width": 100},
-            {"field": "transcription", "headerName": "Reference", "width": 300, "wrapText": True},
-        ]
-        
-        # Only add columns for selected models
-        selected_models_list = selected_models or []
-        for model_name in selected_models_list:
-            col = model_name_to_col.get(model_name)
-            if not col:
-                continue
-            
-            # Main hallucination flag
-            columnDefs.append({
-                "field": f"{model_name}_has_hallucination",
-                "headerName": f"{model_name} ⚠️",
-                "width": 80,
-                "cellRenderer": "agCheckboxCellRenderer",
-                "cellRendererParams": {"disabled": True},
-                "cellClassRules": {
-                    "hallucination-yes": "params.value === true",
-                    "hallucination-no": "params.value === false"
+            {
+                "field": "model", 
+                "headerName": "Model", 
+                "width": 150, 
+                "filter": True,
+                "floatingFilter": True,
+                "filterParams": {
+                    "filterOptions": ["contains", "equals", "startsWith", "endsWith"],
+                    "defaultOption": "contains"
                 }
-            })
-            
-            # Individual detection flags
-            detection_flags = [
-                ("repetition", "Rep", "#ffeb3b"),
-                ("length_anomaly", "Len", "#ff9800"),
-                ("char_repetition", "Char", "#f44336"),
-                ("insertions", "Ins", "#9c27b0"),
-                ("stuttering", "Stut", "#e91e63")
-            ]
-            
-            for flag_key, label, color in detection_flags:
-                # Create unique class name for this flag type
-                flag_class = f"flag-{flag_key.lower().replace('_', '-')}"
-                columnDefs.append({
-                    "field": f"{model_name}_{flag_key}",
-                    "headerName": f"{model_name} {label}",
-                    "width": 70,
-                    "cellRenderer": "agCheckboxCellRenderer",
-                    "cellRendererParams": {"disabled": True},
-                    "cellClassRules": {
-                        flag_class: "params.value === true"
-                    }
-                })
-            
-            # Details column
-            columnDefs.append({
-                "field": f"{model_name}_info",
-                "headerName": f"{model_name} Details",
-                "width": 400,
+            },
+            {"field": "transcription", "headerName": "Reference", "width": 300, "wrapText": True},
+            {"field": "model_transcription", "headerName": "Model Output", "width": 350, "wrapText": True},
+            # Details column - contains all flag information
+            {
+                "field": "info",
+                "headerName": "Details",
+                "width": 500,
                 "wrapText": True,
                 "cellClassRules": {
                     "has-details": "params.value && params.value.length > 0"
                 }
-            })
-            
-            # Transcription column
-            columnDefs.append({
-                "field": col,
-                "headerName": f"{model_name} Text",
-                "width": 350,
-                "wrapText": True
-            })
+            }
+        ]
         
         return df_hall.to_dict('records'), columnDefs
         
@@ -650,6 +552,41 @@ def create_data_table(df):
             spinner_style={"width": "3rem", "height": "3rem"}
         )
     
+    # Control Panel - Dataset Overview and Filters (only shown in data table tab)
+    control_panel = dbc.Row([
+        dbc.Col([
+            dbc.Card([
+                dbc.CardHeader("📊 Dataset Overview", className="py-2"),
+                dbc.CardBody([
+                    html.Div(id="dataset-stats", className="py-1")
+                ], className="py-2")
+            ], className="mb-3")
+        ], width=6),
+        dbc.Col([
+            dbc.Card([
+                dbc.CardHeader("🔍 Filters", className="py-2"),
+                dbc.CardBody([
+                    dbc.Row([
+                        dbc.Col([
+                            dcc.Dropdown(
+                                id="split-filter",
+                                placeholder="Filter by split...",
+                                clearable=True
+                            )
+                        ], width=6),
+                        dbc.Col([
+                            dbc.Input(
+                                id="search-input",
+                                placeholder="Search transcriptions...",
+                                type="text"
+                            )
+                        ], width=6)
+                    ], className="g-2")
+                ], className="py-2")
+            ], className="mb-3")
+        ], width=6)
+    ], className="mb-3")
+    
     # Process the dataframe to extract text from transcription columns
     df_processed = df.copy()
     
@@ -674,28 +611,31 @@ def create_data_table(df):
             "wrapText": True
         })
     
-    return dcc.Loading(
-        id="data-table-loading",
-        type="default",
-        children=dag.AgGrid(
-            id="data-grid",
-            columnDefs=columnDefs,
-            rowData=df_processed.to_dict('records'),
-            defaultColDef={
-                "resizable": True,
-                "sortable": True,
-                "filter": True,
-                "floatingFilter": False
-            },
-            dashGridOptions={
-                "pagination": True,
-                "paginationPageSize": 20,
-                "suppressRowClickSelection": False,
-                "rowSelection": "single"
-            },
-            style={"height": "600px", "width": "100%"}
+    return dbc.Container([
+        control_panel,
+        dcc.Loading(
+            id="data-table-loading",
+            type="default",
+            children=dag.AgGrid(
+                id="data-grid",
+                columnDefs=columnDefs,
+                rowData=df_processed.to_dict('records'),
+                defaultColDef={
+                    "resizable": True,
+                    "sortable": True,
+                    "filter": True,
+                    "floatingFilter": False
+                },
+                dashGridOptions={
+                    "pagination": True,
+                    "paginationPageSize": 20,
+                    "suppressRowClickSelection": False,
+                    "rowSelection": "single"
+                },
+                style={"height": "600px", "width": "100%"}
+            )
         )
-    )
+    ], fluid=True)
 
 def create_hallucinations_tab(df):
     """Create the hallucination detection tab with filters and model selection
@@ -752,13 +692,28 @@ def create_hallucinations_tab(df):
                 # Only store flags if this model has hallucinations
                 if hall_result['has_hallucination']:
                     row_has_hallucinations = True
+                    # Collect all detected issues for info column
+                    all_issues = []
+                    if hall_result['repetition']['detected']:
+                        all_issues.append(f"Repetition: {hall_result['repetition']['info']}")
+                    if hall_result['length_anomaly']['detected']:
+                        all_issues.append(f"Length: {hall_result['length_anomaly']['info']}")
+                    if hall_result['char_repetition']['detected']:
+                        all_issues.append(f"Char rep: {hall_result['char_repetition']['info']}")
+                    if hall_result['insertions']['detected']:
+                        all_issues.append(f"Insertions: {hall_result['insertions']['info']}")
+                    if hall_result['stuttering']['detected']:
+                        all_issues.append(f"Stuttering: {hall_result['stuttering']['info']}")
+                    
                     row_model_flags[model_name] = {
                         'has_hallucination': True,
                         'repetition': hall_result['repetition']['detected'],
                         'length_anomaly': hall_result['length_anomaly']['detected'],
                         'char_repetition': hall_result['char_repetition']['detected'],
                         'insertions': hall_result['insertions']['detected'],
-                        'stuttering': hall_result['stuttering']['detected']
+                        'stuttering': hall_result['stuttering']['detected'],
+                        'info': '; '.join(all_issues) if all_issues else '',
+                        'hypothesis': hypothesis  # Store the model transcription
                     }
                 
                 # Add flags to record for DataFrame (always, for table display)
@@ -883,119 +838,28 @@ def create_hallucinations_tab(df):
                 x=0.5
             ),
             height=200,
-            margin=dict(l=20, r=20, t=50, b=20)
+            margin=dict(l=20, r=20, t=50, b=5)
         )
         
-        # Control panel with filters
-        controls = dbc.Card([
-            dbc.CardHeader("🎯 Hallucination Filters", className="py-2"),
-            dbc.CardBody([
-                dbc.Row([
-                    dbc.Col([
-                        dbc.Label("Show only rows with hallucinations:", className="fw-bold mb-2"),
-                        dbc.Checklist(
-                            id="hallucinations-filter-checkbox",
-                            options=[{"label": " Filter hallucinations only", "value": "filter"}],
-                            value=[],
-                            inline=True,
-                            switch=True
-                        )
-                    ], width=6),
-                    dbc.Col([
-                        dbc.Label("Select models to display:", className="fw-bold mb-2"),
-                        dcc.Dropdown(
-                            id="hallucinations-model-selector",
-                            options=model_options,
-                            value=[opt["value"] for opt in model_options],  # All models selected by default
-                            multi=True,
-                            placeholder="Select models...",
-                            clearable=False
-                        )
-                    ], width=6)
-                ], className="g-3")
-            ], className="py-3")
-        ], className="mb-3")
-        
-        # Prepare columns for AG Grid with better organization
-        columnDefs = [
-            {"field": "id", "headerName": "ID", "width": 150, "pinned": "left"},
-            {"field": "split", "headerName": "Split", "width": 100},
-            {"field": "transcription", "headerName": "Reference", "width": 300, "wrapText": True},
-        ]
-        
-        # Add hallucination detection columns for each model
-        for col in whisper_cols:
-            model_name = col.replace('whisper_', '').replace('_transcription', '').replace('_', ' ').title()
-            
-            # Main hallucination flag with color coding
-            columnDefs.append({
-                "field": f"{model_name}_has_hallucination",
-                "headerName": f"{model_name} ⚠️",
-                "width": 80,
-                "cellRenderer": "agCheckboxCellRenderer",
-                "cellRendererParams": {"disabled": True},
-                "cellClassRules": {
-                    "hallucination-yes": "params.value === true",
-                    "hallucination-no": "params.value === false"
-                }
-            })
-            
-            # Individual detection flags
-            detection_flags = [
-                ("repetition", "Rep", "#ffeb3b"),
-                ("length_anomaly", "Len", "#ff9800"),
-                ("char_repetition", "Char", "#f44336"),
-                ("insertions", "Ins", "#9c27b0"),
-                ("stuttering", "Stut", "#e91e63")
-            ]
-            
-            for flag_key, label, color in detection_flags:
-                # Create unique class name for this flag type
-                flag_class = f"flag-{flag_key.lower().replace('_', '-')}"
-                columnDefs.append({
-                    "field": f"{model_name}_{flag_key}",
-                    "headerName": f"{model_name} {label}",
-                    "width": 70,
-                    "cellRenderer": "agCheckboxCellRenderer",
-                    "cellRendererParams": {"disabled": True},
-                    "cellClassRules": {
-                        flag_class: "params.value === true"
-                    }
-                })
-            
-            # Details column
-            columnDefs.append({
-                "field": f"{model_name}_info",
-                "headerName": f"{model_name} Details",
-                "width": 400,
-                "wrapText": True,
-                "cellClassRules": {
-                    "has-details": "params.value && params.value.length > 0"
-                }
-            })
-            
-            # Transcription column
-            columnDefs.append({
-                "field": col,
-                "headerName": f"{model_name} Text",
-                "width": 350,
-                "wrapText": True
-            })
-        
-        # Initial table data (will be updated by callback)
+        # Initial table data and columns (will be updated by callback)
         return html.Div([
             dbc.Row([
                 dbc.Col([
                     dcc.Graph(figure=stats_table, config={'displayModeBar': False})
                 ], width=12)
-            ], className="mb-3"),
-            controls,
+            ], className="mb-1"),
+            dbc.Row([
+                dbc.Col([
+                    html.P("Only messages with hallucinations are shown. Each row represents one hallucination instance. Use the Model column filter to filter by specific models.", 
+                           className="text-muted small mb-1")
+                ], width=12)
+            ]),
             dcc.Loading(
                 id="hallucinations-table-loading",
                 type="default",
                 children=dag.AgGrid(
                     id="hallucinations-grid",
-                    columnDefs=columnDefs,
+                    columnDefs=[],  # Empty initially, populated by callback
                     rowData=[],  # Empty initially, populated by callback
                     defaultColDef={
                         "resizable": True,
@@ -1278,16 +1142,41 @@ def create_analytics_tab(df):
             
             for _, row in df_processed.iterrows():
                 if not pd.isna(row[wer_col]):
+                    # Ensure ID is a string and handle NaN/None values
+                    row_id = str(row.get('id', 'unknown'))
+                    if row_id == 'nan' or row_id == 'None' or pd.isna(row.get('id')):
+                        row_id = f'unknown_{len(wer_data)}'  # Create unique ID for missing values
+                    
                     wer_data.append({
                         'Model': model_name,
                         'WER': row[wer_col] * 100,  # Convert to percentage
-                        'ID': row.get('id', 'unknown')
+                        'ID': row_id
                     })
         
         wer_df = pd.DataFrame(wer_data)
         
         if wer_df.empty:
             return html.Div("No valid WER data available for analysis")
+        
+        # Ensure ID column is string type
+        wer_df['ID'] = wer_df['ID'].astype(str)
+        
+        # Remove any duplicate ID+Model combinations (keep first occurrence)
+        # This is a safeguard in case duplicates somehow got through
+        initial_count = len(wer_df)
+        wer_df = wer_df.drop_duplicates(subset=['ID', 'Model'], keep='first')
+        if len(wer_df) != initial_count:
+            logger.warning(f"Removed {initial_count - len(wer_df)} duplicate ID+Model combinations in analytics tab")
+        
+        # Verify no duplicates remain
+        duplicates = wer_df.duplicated(subset=['ID', 'Model']).sum()
+        if duplicates > 0:
+            logger.error(f"ERROR: Still have {duplicates} duplicate ID+Model combinations after deduplication!")
+            # Force remove by resetting index and using drop_duplicates again
+            wer_df = wer_df.reset_index(drop=True).drop_duplicates(subset=['ID', 'Model'], keep='first')
+        
+        # Reset index to ensure clean integer index (plotly can have issues with duplicate indices)
+        wer_df = wer_df.reset_index(drop=True)
         
         # Calculate mean WER for each model (for annotations)
         mean_wer_by_model = wer_df.groupby('Model')['WER'].mean()
@@ -1451,22 +1340,52 @@ def create_analytics_tab(df):
         )
         
         # 4. Heatmap of WER by sample and model
-        pivot_df = wer_df.pivot(index='ID', columns='Model', values='WER')
-        fig_heatmap = px.imshow(
-            pivot_df,
-            labels=dict(x="Model", y="Sample ID", color="WER"),
-            color_continuous_scale='Reds',
-            aspect='auto',
-            title="WER Heatmap by Sample and Model"
-        )
-        fig_heatmap.update_layout(
-            yaxis=dict(title='Sample ID'),
-            xaxis=dict(title='Whisper Model'),
-            coloraxis_colorbar=dict(title="Word Error Rate (%)"),
-            font=dict(size=10),
-            title_font_size=16,
-            height=400
-        )
+        # Ensure ID column is string and unique before pivoting
+        wer_df_heatmap = wer_df.copy()
+        wer_df_heatmap['ID'] = wer_df_heatmap['ID'].astype(str)
+        
+        # Final deduplication check before pivot
+        initial_heatmap_count = len(wer_df_heatmap)
+        wer_df_heatmap = wer_df_heatmap.drop_duplicates(subset=['ID', 'Model'], keep='first')
+        if len(wer_df_heatmap) != initial_heatmap_count:
+            logger.warning(f"Removed {initial_heatmap_count - len(wer_df_heatmap)} duplicate ID+Model combinations before heatmap pivot")
+        
+        # Use pivot_table to handle any remaining duplicate ID/Model combinations by taking the mean
+        fig_heatmap = None
+        try:
+            pivot_df = wer_df_heatmap.pivot_table(index='ID', columns='Model', values='WER', aggfunc='mean')
+            fig_heatmap = px.imshow(
+                pivot_df,
+                labels=dict(x="Model", y="Sample ID", color="WER"),
+                color_continuous_scale='Reds',
+                aspect='auto',
+                title="WER Heatmap by Sample and Model"
+            )
+            fig_heatmap.update_layout(
+                yaxis=dict(title='Sample ID'),
+                xaxis=dict(title='Whisper Model'),
+                coloraxis_colorbar=dict(title="Word Error Rate (%)"),
+                font=dict(size=10),
+                title_font_size=16,
+                height=400
+            )
+        except ValueError as e:
+            logger.error(f"Error creating pivot table for heatmap: {e}")
+            logger.error(f"wer_df_heatmap shape: {wer_df_heatmap.shape}")
+            logger.error(f"Duplicate IDs: {wer_df_heatmap['ID'].duplicated().sum()}")
+            logger.error(f"Duplicate ID+Model: {wer_df_heatmap.duplicated(subset=['ID', 'Model']).sum()}")
+            # Create a placeholder figure instead of crashing
+            fig_heatmap = go.Figure()
+            fig_heatmap.add_annotation(
+                text=f"Heatmap unavailable: {str(e)}<br>Check logs for details.",
+                xref="paper", yref="paper",
+                x=0.5, y=0.5, showarrow=False,
+                font=dict(size=14, color="red")
+            )
+            fig_heatmap.update_layout(
+                title="WER Heatmap by Sample and Model (Error)",
+                height=400
+            )
         
         return dbc.Container([
             dbc.Row([
@@ -1482,13 +1401,15 @@ def create_analytics_tab(df):
                     dcc.Graph(figure=table_fig)
                 ], width=6),
                 dbc.Col([
-                    dcc.Graph(figure=fig_heatmap)
+                    dcc.Graph(figure=fig_heatmap) if fig_heatmap is not None else html.Div("Heatmap unavailable")
                 ], width=6)
             ])
         ])
         
     except Exception as e:
+        import traceback
         logger.error(f"Error creating analytics tab: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return html.Div(f"Error creating analytics: {str(e)}")
 
 def highlight_differences(source: str, target: str, method='basic') -> html.Div:
@@ -1826,4 +1747,6 @@ def health_check():
 server = app.server
 
 if __name__ == "__main__":
-    app.run_server(debug=True, host='0.0.0.0', port=8050)
+    # In debug mode, Dash will auto-reload on file changes
+    # Set use_reloader=True explicitly to ensure hot reload works
+    app.run_server(debug=True, host='0.0.0.0', port=8050, use_reloader=True)

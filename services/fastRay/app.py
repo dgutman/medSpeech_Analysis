@@ -69,13 +69,24 @@ class BatchPathJob(BaseModel):
     ray_actor_options={
         # 1 GPU per replica; change to 0 if you want CPU-only
         "num_gpus": float(os.environ.get("NUM_GPUS_PER_REPLICA", "1")),
+        # CPU-bound workload (audio decoding, preprocessing) - try 2-4 CPUs per replica
+        # More CPUs might help with parallel processing, though Python GIL limits true parallelism
+        "num_cpus": int(os.environ.get("NUM_CPUS_PER_REPLICA", "2")),
     },
     # Allow multiple concurrent requests per replica to increase throughput
-    # NOTE: Ray Serve routing is uneven (only 1 replica getting requests)
-    # So we need to allow that replica to handle many concurrent requests
-    # With max_ongoing_requests=5, the busy replica can handle 5 at once
-    # This should get us closer to 40-50 files/sec even with bad routing
-    max_ongoing_requests=int(os.environ.get("MAX_ONGOING_REQUESTS", "5")),
+    # With I/O-bound workloads (file reads), we need high concurrency to overlap:
+    # - While request A waits on file I/O, request B can use GPU
+    # - While request B waits on file I/O, request C can use GPU
+    # - This maximizes GPU utilization despite I/O overhead
+    # Default is 30 to allow good I/O/GPU overlap
+    max_ongoing_requests=int(os.environ.get("MAX_ONGOING_REQUESTS", "30")),
+    # Try autoscaling config even with fixed replicas - might force better routing
+    # Setting min=max keeps replicas fixed but enables autoscaler logic
+    autoscaling_config={
+        "min_replicas": int(os.environ.get("NUM_REPLICAS", "1")),
+        "max_replicas": int(os.environ.get("NUM_REPLICAS", "1")),
+        "target_ongoing_requests": 5,  # Target 5 requests per replica
+    } if os.environ.get("ENABLE_AUTOSCALING", "false").lower() == "true" else None,
 )
 @serve.ingress(api)
 class WhisperService:
@@ -221,12 +232,32 @@ class WhisperService:
         text = "".join(seg.text for seg in segments)
         inference_time = time.time() - start_time
         
+        # Convert segments to list of dicts with all Whisper data
+        segments_data = []
+        for seg in segments:
+            segments_data.append({
+                "id": seg.id,
+                "start": seg.start,
+                "end": seg.end,
+                "text": seg.text,
+                "tokens": seg.tokens if hasattr(seg, 'tokens') else None,
+                "avg_logprob": seg.avg_logprob if hasattr(seg, 'avg_logprob') else None,
+                "no_speech_prob": seg.no_speech_prob if hasattr(seg, 'no_speech_prob') else None,
+                "compression_ratio": seg.compression_ratio if hasattr(seg, 'compression_ratio') else None,
+                "seek": seg.seek if hasattr(seg, 'seek') else None,
+                "temperature": seg.temperature if hasattr(seg, 'temperature') else None,
+            })
+        
         return {
             "model": model_name or self.default_model_name,
             "language": info.language,
+            "language_probability": info.language_probability if hasattr(info, 'language_probability') and info.language_probability is not None else None,
             "duration": info.duration,
+            "duration_after_vad": info.duration_after_vad if hasattr(info, 'duration_after_vad') and info.duration_after_vad is not None else None,
+            "all_language_probs": dict(info.all_language_probs) if hasattr(info, 'all_language_probs') and info.all_language_probs is not None else None,
             "inference_time_seconds": round(inference_time, 3),
             "text": text,
+            "segments": segments_data,
         }
     
     def _run_from_path(self, file_path: str, task="transcribe", beam_size=5, language=None, model_name=None):
@@ -257,12 +288,32 @@ class WhisperService:
         text = "".join(seg.text for seg in segments)
         inference_time = time.time() - start_time
         
+        # Convert segments to list of dicts with all Whisper data
+        segments_data = []
+        for seg in segments:
+            segments_data.append({
+                "id": seg.id,
+                "start": seg.start,
+                "end": seg.end,
+                "text": seg.text,
+                "tokens": seg.tokens if hasattr(seg, 'tokens') else None,
+                "avg_logprob": seg.avg_logprob if hasattr(seg, 'avg_logprob') else None,
+                "no_speech_prob": seg.no_speech_prob if hasattr(seg, 'no_speech_prob') else None,
+                "compression_ratio": seg.compression_ratio if hasattr(seg, 'compression_ratio') else None,
+                "seek": seg.seek if hasattr(seg, 'seek') else None,
+                "temperature": seg.temperature if hasattr(seg, 'temperature') else None,
+            })
+        
         return {
             "model": model_name or self.default_model_name,
             "language": info.language,
+            "language_probability": info.language_probability if hasattr(info, 'language_probability') and info.language_probability is not None else None,
             "duration": info.duration,
+            "duration_after_vad": info.duration_after_vad if hasattr(info, 'duration_after_vad') and info.duration_after_vad is not None else None,
+            "all_language_probs": dict(info.all_language_probs) if hasattr(info, 'all_language_probs') and info.all_language_probs is not None else None,
             "inference_time_seconds": round(inference_time, 3),
             "text": text,
+            "segments": segments_data,
         }
 
     @api.post("/transcribe/file")

@@ -37,13 +37,26 @@ fi
 echo "✓ API is accessible"
 echo ""
 
+# Function to cleanup GPU monitoring on exit
+cleanup_monitor() {
+    if [ -n "$MONITOR_PID" ]; then
+        echo ""
+        echo "Stopping GPU monitoring (PID: $MONITOR_PID)..."
+        kill $MONITOR_PID 2>/dev/null || true
+        wait $MONITOR_PID 2>/dev/null || true
+    fi
+}
+
+# Set trap to cleanup on script exit (including Ctrl+C)
+trap cleanup_monitor EXIT INT TERM
+
 # Start GPU monitoring in background
 echo "Starting GPU monitoring..."
-# Monitor GPU and save to both log file and show in terminal
-python3 monitor_gpu.py "$MONITOR_INTERVAL" 2>&1 | tee gpu_monitor.log &
+# Monitor GPU and save to log file only (not shown in terminal to reduce verbosity)
+python3 monitor_gpu.py "$MONITOR_INTERVAL" > gpu_monitor.log 2>&1 &
 MONITOR_PID=$!
 echo "GPU monitor PID: $MONITOR_PID"
-echo "GPU monitoring output will be shown in real-time and saved to gpu_monitor.log"
+echo "GPU monitoring data saved to gpu_monitor.log (not shown in terminal)"
 echo ""
 
 # Run stress test
@@ -56,11 +69,8 @@ export MODEL
 
 python3 stress_test.py
 
-# Stop GPU monitoring
-echo ""
-echo "Stopping GPU monitoring..."
-kill $MONITOR_PID 2>/dev/null || true
-wait $MONITOR_PID 2>/dev/null || true
+# Stop GPU monitoring (cleanup function will also handle this, but explicit is good)
+cleanup_monitor
 
 echo ""
 echo "=== Stress Test Complete ==="
