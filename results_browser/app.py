@@ -1,5 +1,5 @@
 import dash
-from dash import dcc, html, Input, Output, State, callback_context, dash_table
+from dash import dcc, html, Input, Output, State, callback_context, dash_table, no_update
 from dash.exceptions import PreventUpdate
 import dash_bootstrap_components as dbc
 import dash_ag_grid as dag
@@ -239,7 +239,8 @@ app.layout = dbc.Container([
 @app.callback(
     [Output("dataset-stats", "children"),
      Output("split-filter", "options")],
-    [Input("main-tabs", "active_tab")]
+    [Input("main-tabs", "active_tab")],
+    prevent_initial_call=False
 )
 def update_dataset_stats(active_tab):
     """Update dataset statistics and filter options"""
@@ -257,31 +258,49 @@ def update_dataset_stats(active_tab):
             )
         ]
         
-        # Filter options
-        split_options = [{"label": split, "value": split} for split in splits.keys()]
+        # Filter options - only update if table tab is active (component exists)
+        if active_tab == "table-tab":
+            split_options = [{"label": split, "value": split} for split in splits.keys()]
+        else:
+            # Component doesn't exist, return empty list but don't error
+            split_options = no_update
         
         return stats_children, split_options
         
     except Exception as e:
         logger.error(f"Error updating stats: {e}")
-        return [html.P("Error loading data")], []
+        # Return empty stats and no_update for split-filter if component doesn't exist
+        if active_tab == "table-tab":
+            return [html.P("Error loading data")], []
+        else:
+            return [html.P("Error loading data")], no_update
 
 @app.callback(
     [Output("tab-content", "children"),
      Output("hallucinations-flags-store", "data")],
     [Input("main-tabs", "active_tab"),
-     Input("split-filter", "value"),
-     Input("search-input", "value"),
      Input("wer-method-store", "data"),
-     Input("compare-sample-id-store", "data")]
+     Input("compare-sample-id-store", "data"),
+     Input("split-filter", "value"),
+     Input("search-input", "value")],
+    prevent_initial_call=False
 )
-def update_tab_content(active_tab, split_filter, search_term, wer_method, sample_id):
+def update_tab_content(active_tab, wer_method, sample_id, split_filter, search_term):
     """Update content based on active tab and filters"""
+    # Check which input triggered the callback
+    ctx = callback_context
+    if ctx.triggered:
+        triggered_id = ctx.triggered[0]['prop_id'].split('.')[0]
+        # If filter inputs triggered but we're not on table tab, prevent update
+        if triggered_id in ['split-filter', 'search-input'] and active_tab != "table-tab":
+            raise PreventUpdate
+    
     try:
         df = get_data()
         hallucination_flags = None
         
-        # Apply filters
+        # Apply filters only if they exist (table tab is active)
+        # split_filter and search_term will be None if components don't exist
         if split_filter:
             df = df[df['split'] == split_filter]
         
@@ -393,12 +412,12 @@ def handle_sample_id_input(n_submit, sample_id_input, current_id):
     [Output("hallucinations-grid", "rowData"),
      Output("hallucinations-grid", "columnDefs")],
     [Input("main-tabs", "active_tab"),
-     Input("split-filter", "value"),
-     Input("search-input", "value"),
      Input("hallucinations-flags-store", "data")],
+    [State("split-filter", "value"),
+     State("search-input", "value")],
     prevent_initial_call=False
 )
-def update_hallucinations_table(active_tab, split_filter, search_term, hallucination_flags):
+def update_hallucinations_table(active_tab, hallucination_flags, split_filter, search_term):
     """Update hallucinations table with flattened structure
     
     Creates one row per hallucination instance (message + model combination).
