@@ -1,49 +1,77 @@
 """
 Database helper functions for pixeltable operations.
+
+Integrates with the refactored config system for consistent table naming.
+Model configuration is loaded from models.json for easy modification.
 """
 import os
-
-# Try to load from .env file if it exists
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass  # dotenv not required
-
-# Set PIXELTABLE_PGDATA to absolute path before importing pixeltable
-# This prevents PostgreSQL from using wrong username in paths and ensures
-# we're using the same database across all scripts
-# Load from .env first, then fall back to default
-if 'PIXELTABLE_PGDATA' not in os.environ:
-    os.environ['PIXELTABLE_PGDATA'] = '/scr/dagutman/devel/medSpeech_Analysis/.pxtData'
-
+import json
 import pixeltable as pxt
+from config import get_config
+from pathlib import Path
 
+# Get configuration
+config = get_config()
 
-# Table configuration
-TABLE_NAME = 'medSpeechAnalysis_hf_ray.hani89_asr_dataset'
+# Full table name from config
+TABLE_NAME = config.get_table_name()
 
-# Model configuration: column_name -> Whisper model name
-# All models enabled - will process in order: tiny, base, small, medium, large, turbo
-# Note: "turbo" in OpenAI Whisper API = "large-v3" in faster_whisper
-# Replica columns for stability testing: tiny_rep1 through tiny_rep5
-MODEL_CONFIG = {
-    "whisper_tiny": "tiny",
-    "whisper_base": "base",
-    "whisper_small": "small",
-    "whisper_medium": "medium",
-    "whisper_large": "large",
-    "whisper_turbo": "large-v3",  # faster_whisper uses "large-v3" instead of "turbo"
-    # Replica columns for stability testing (all use tiny model)
-    "tiny_rep1": "tiny",
-    "tiny_rep2": "tiny",
-    "tiny_rep3": "tiny",
-    "tiny_rep4": "tiny",
-    "tiny_rep5": "tiny",
-}
+# Load model configuration from JSON file
+def load_model_config():
+    """Load model configuration from models.json file."""
+    models_file = Path(__file__).parent / "models.json"
+    
+    if not models_file.exists():
+        # Fallback to hardcoded config if file doesn't exist
+        print(f"⚠️  Warning: {models_file} not found, using default configuration")
+        return {
+            "whisper_tiny": "tiny",
+            "whisper_base": "base",
+            "whisper_small": "small",
+            "whisper_medium": "medium",
+            "whisper_large": "large",
+            "whisper_turbo": "large-v3",
+        }, {}
+    
+    try:
+        with open(models_file, 'r') as f:
+            config_data = json.load(f)
+        
+        models = config_data.get('models', {})
+        replicas = config_data.get('replicas', {})
+        
+        # Remove comment keys (those starting with _)
+        replicas = {k: v for k, v in replicas.items() if not k.startswith('_')}
+        
+        return models, replicas
+    
+    except Exception as e:
+        print(f"⚠️  Warning: Error loading {models_file}: {e}")
+        print("   Using default configuration")
+        return {
+            "whisper_tiny": "tiny",
+            "whisper_base": "base",
+            "whisper_small": "small",
+            "whisper_medium": "medium",
+            "whisper_large": "large",
+            "whisper_turbo": "large-v3",
+        }, {}
 
-# List of model columns (derived from MODEL_CONFIG keys)
-MODEL_COLUMNS = list(MODEL_CONFIG.keys())
+# Load model and replica configurations
+MODEL_CONFIG, REPLICA_CONFIG = load_model_config()
+
+# Combined model configuration (includes both standard models and replicas)
+# Set INCLUDE_REPLICAS=True in .env to enable replica columns
+INCLUDE_REPLICAS = os.getenv('INCLUDE_REPLICAS', 'false').lower() == 'true'
+
+if INCLUDE_REPLICAS:
+    MODEL_CONFIG_FULL = {**MODEL_CONFIG, **REPLICA_CONFIG}
+    print(f"ℹ️  Replica columns enabled: {list(REPLICA_CONFIG.keys())}")
+else:
+    MODEL_CONFIG_FULL = MODEL_CONFIG.copy()
+
+# List of model columns (derived from MODEL_CONFIG_FULL keys)
+MODEL_COLUMNS = list(MODEL_CONFIG_FULL.keys())
 
 
 def get_table(table_name: str = None):
@@ -108,7 +136,7 @@ def get_whisper_model_name(model_column_name: str) -> str:
     Returns:
         Whisper model name (e.g., "base") or "base" as default
     """
-    return MODEL_CONFIG.get(model_column_name, "base")
+    return MODEL_CONFIG_FULL.get(model_column_name, "base")
 
 
 def initialize_table(table_name: str = None, ensure_models: bool = True):

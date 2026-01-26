@@ -1,4 +1,4 @@
-pixeltable
+pixeltable==0.5.12
 dash==2.14.1
 dash-bootstrap-components==1.5.0
 dash-ag-grid==31.3.1

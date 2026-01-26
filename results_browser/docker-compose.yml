@@ -6,7 +6,7 @@ services:
       dockerfile: results_browser/Dockerfile
       args:
         PIXELTABLE_API_KEY: ${PIXELTABLE_API_KEY}
-        PIXELTABLE_DATASET_URL: ${PIXELTABLE_DATASET_URL:-pxt://speech-to-text-analytics:main/hani89_asr_dataset}
+        PIXELTABLE_DATASET_URL: ${PIXELTABLE_DATASET_URL:-pxt://speech-to-text-analytics:main/hani89_asr_data_reload/transcribe_compare}
         UID: ${UID:-1000}
         GID: ${GID:-1000}
     ports:
@@ -19,6 +19,10 @@ services:
       - PYTHONPATH=/app
       - CACHE_DIR=/var/lib/app/cache
       - DATA_DIR=/var/lib/app/data
+      # Override PIXELTABLE_PGDATA to use container path (data is preloaded during build)
+      # Host path from .env doesn't exist in container, so use container's default location
+      # Pixeltable default is ~/.pixeltable/pgdata (for appuser: /home/appuser/.pixeltable/pgdata)
+      - PIXELTABLE_PGDATA=/home/appuser/.pixeltable/pgdata
     env_file:
       - ../.env
     restart: unless-stopped
@@ -35,7 +39,7 @@ services:
       dockerfile: results_browser/Dockerfile
       args:
         PIXELTABLE_API_KEY: ${PIXELTABLE_API_KEY}
-        PIXELTABLE_DATASET_URL: ${PIXELTABLE_DATASET_URL:-pxt://speech-to-text-analytics:main/hani89_asr_dataset}
+        PIXELTABLE_DATASET_URL: ${PIXELTABLE_DATASET_URL:-pxt://speech-to-text-analytics:main/hani89_asr_data_reload/transcribe_compare}
         UID: ${UID:-1000}
         GID: ${GID:-1000}
     ports:
@@ -44,18 +48,20 @@ services:
       # Mount the entire directory for code editing, but overlay venv with a named volume
       # This prevents the host's venv from interfering with container's Python packages
       - ./:/app
-      - results-browser-venv:/app/venv  # Overlay venv with empty volume to hide host's venv
       - ../.env:/app/.env:ro
     environment:
       - PYTHONPATH=/app
       - CACHE_DIR=/app/cache
       - DATA_DIR=/app/data
+      # Override PIXELTABLE_PGDATA to use container path (data is preloaded during build)
+      # Host path from .env doesn't exist in container, so use container's default location
+      # Pixeltable default is ~/.pixeltable/pgdata (for appuser: /home/appuser/.pixeltable/pgdata)
+      - PIXELTABLE_PGDATA=/home/appuser/.pixeltable/pgdata
+      # Force production mode with Gunicorn for better performance and reliable caching
+      - USE_GUNICORN=1
+      # Use simplified app (set to 0 for full app with all tabs)
+      - USE_SIMPLE_APP=1
     env_file:
       - ../.env
     command: [ "./startup.sh" ]
     profiles: [ "dev" ] # Only run when explicitly requested
-
-volumes:
-  results-browser-venv:
-  results-browser-cache:
-  results-browser-data:

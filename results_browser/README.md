@@ -16,7 +16,7 @@ A Dockerized web application for browsing and analyzing medical speech datasets 
 ### Prerequisites
 
 - Docker and Docker Compose
-- Access to the Pixeltable dataset: `pxt://speech-to-text-analytics/hani89_asr_dataset`
+- Access to the Pixeltable dataset: `pxt://speech-to-text-analytics:main/hani89_asr_data_reload/transcribe_compare`
 
 ### Setup
 
@@ -28,7 +28,7 @@ A Dockerized web application for browsing and analyzing medical speech datasets 
 2. **Edit `.env` file** with your Pixeltable API key:
    ```bash
    PIXELTABLE_API_KEY=your_actual_api_key_here
-   PIXELTABLE_DATASET_URL=pxt://speech-to-text-analytics:main/hani89_asr_dataset
+   PIXELTABLE_DATASET_URL=pxt://speech-to-text-analytics:main/hani89_asr_data_reload/transcribe_compare
    ```
 
 3. **Build and run with Docker Compose**:
@@ -49,7 +49,7 @@ A Dockerized web application for browsing and analyzing medical speech datasets 
 2. **Set environment variables**:
    ```bash
    export PIXELTABLE_API_KEY=your_api_key_here
-   export PIXELTABLE_DATASET_URL=pxt://speech-to-text-analytics:main/hani89_asr_dataset
+   export PIXELTABLE_DATASET_URL=pxt://speech-to-text-analytics:main/hani89_asr_data_reload/transcribe_compare
    ```
 
 3. **Preload data**:
@@ -87,7 +87,7 @@ A Dockerized web application for browsing and analyzing medical speech datasets 
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `PIXELTABLE_API_KEY` | Your Pixeltable API key | Required |
-| `PIXELTABLE_DATASET_URL` | Dataset URL to load | `pxt://speech-to-text-analytics/hani89_asr_dataset` |
+| `PIXELTABLE_DATASET_URL` | Dataset URL to load | `pxt://speech-to-text-analytics:main/hani89_asr_data_reload/transcribe_compare` |
 | `CACHE_DIR` | Local cache directory | `./cache` |
 | `DATA_DIR` | Data directory | `./data` |
 

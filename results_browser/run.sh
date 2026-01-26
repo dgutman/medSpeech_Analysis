@@ -5,6 +5,16 @@
 
 set -e
 
+# Load environment variables for BOTH runtime and build args.
+# docker-compose `env_file:` only affects runtime environment; build args come from the host env.
+# We keep the project-wide secrets in ../.env, so source it here to ensure builds can preload Pixeltable.
+if [ -f "../.env" ]; then
+    set -a
+    # shellcheck disable=SC1091
+    source "../.env"
+    set +a
+fi
+
 # Auto-detect current user's UID/GID (unless already set)
 if [ -z "$UID" ]; then
     export UID=$(id -u)
@@ -29,11 +39,13 @@ case "$1" in
         ;;
     "build")
         echo "🔨 Building application container (includes data prep)..."
-        docker compose build results-browser
+        # Build both targets: production and dev use the same Dockerfile but can produce distinct images.
+        docker compose build results-browser results-browser-dev
         ;;
     "rebuild")
         echo "🔨 Rebuilding application container (no cache)..."
-        docker compose build --no-cache results-browser
+        # Rebuild both so `./run.sh dev` doesn't keep running an old image (e.g., pixeltable==0.5.0)
+        docker compose build --no-cache results-browser results-browser-dev
         ;;
     "down")
         echo "🛑 Stopping results browser..."
@@ -44,8 +56,19 @@ case "$1" in
         docker compose down -v
         docker system prune -f
         ;;
+    "bash")
+        echo "🐚 Starting container in bash mode for debugging..."
+        shift  # Remove "bash" from arguments
+        # Check if user wants dev mode (bash-dev)
+        if [ "$1" = "dev" ]; then
+            shift
+            docker compose --profile dev run --rm --entrypoint /bin/bash results-browser-dev "$@"
+        else
+            docker compose run --rm --entrypoint /bin/bash results-browser "$@"
+        fi
+        ;;
     *)
-        echo "Usage: $0 {up|dev|build|rebuild|down|clean}"
+        echo "Usage: $0 {up|dev|build|rebuild|down|clean|bash}"
         echo ""
         echo "Commands:"
         echo "  up         - Start the application (data prep happens automatically)"
@@ -54,6 +77,8 @@ case "$1" in
         echo "  rebuild    - Rebuild the application container (no cache)"
         echo "  down       - Stop the application"
         echo "  clean      - Clean up everything"
+        echo "  bash       - Start container in bash mode for debugging"
+        echo "  bash dev   - Start dev container in bash mode for debugging"
         echo ""
         echo "Typical workflow:"
         echo "  1. Development: ./run.sh dev (changes are live, no rebuild needed)"

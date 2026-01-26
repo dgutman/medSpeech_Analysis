@@ -1,0 +1,11 @@
+datasets[audio]>=2.14.0
+transformers>=4.30.0
+accelerate>=0.20.0
+evaluate>=0.4.0
+jiwer>=3.0.0
+tensorboard>=2.13.0
+gradio>=3.40.0
+torch>=2.0.0
+numpy>=1.24.0
+wandb>=0.15.0
+python-dotenv>=1.0.0 
