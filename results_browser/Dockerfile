@@ -71,6 +71,9 @@ USER appuser
 # If preload fails, the build will fail (this is critical for the container to work)
 RUN python preload_data.py
 
+# Precompute analytics tab (WER + violin + summary table) into viz cache so the tab loads instantly
+RUN CACHE_DIR=/var/lib/app/cache python warm_analytics_cache.py
+
 # Make startup script executable
 RUN chmod +x startup.sh
 

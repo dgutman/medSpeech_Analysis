@@ -84,28 +84,6 @@ def get_local_table_name():
         return 'local_transcribe_compare'
 
 
-def load_cached_data():
-    """Load data from local cache"""
-    cache_dir = os.environ.get('CACHE_DIR', './cache')
-    cache_file = os.path.join(cache_dir, 'dataset_cache.pkl')
-    
-    logger.info(f"Looking for cache file at: {cache_file}")
-    logger.info(f"File exists: {os.path.exists(cache_file)}")
-    
-    if not os.path.exists(cache_file):
-        logger.info("No cached data found")
-        return None
-    
-    try:
-        df = pd.read_pickle(cache_file)
-        record_count = len(df) if hasattr(df, '__len__') else df.shape[0] if hasattr(df, 'shape') else 'unknown'
-        logger.info(f"Loaded {record_count} records from cache")
-        return df
-    except Exception as e:
-        logger.error(f"Failed to load cached data: {e}")
-        return None
-
-
 def initialize_connection():
     """Initialize Pixeltable connection at startup (e.g. warm cache, validate table exists)."""
     get_pixeltable_table()

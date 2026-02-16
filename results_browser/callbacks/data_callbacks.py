@@ -6,7 +6,7 @@ from dash import Input, Output, no_update
 from dash.exceptions import PreventUpdate
 import logging
 
-from data_loader import get_total_count, get_split_counts, load_pixeltable_data_paginated
+from data_loader import get_total_count, get_split_counts
 from config import app
 
 logger = logging.getLogger(__name__)

@@ -6,12 +6,7 @@ from dash import Input, Output, State, callback_context
 from dash.exceptions import PreventUpdate
 import logging
 
-from data_loader import (
-    load_pixeltable_data_paginated,
-    load_paginated_index,
-    load_rows_by_ids,
-    get_total_count,
-)
+from data_loader import load_paginated_index, load_rows_by_ids, get_total_count
 from utils import extract_text_from_transcription
 from config import app
 
@@ -252,7 +247,7 @@ def register_table_callbacks():
             if df is None or df.empty:
                 return {"rowData": [], "rowCount": total_count}
 
-            # Extract text for model/whisper columns so we don't show [object Object]
+            # Extract text for model/whisper/tiny_rep columns so we don't show [object Object]
             try:
                 from db_helpers import MODEL_COLUMNS
                 model_cols_in_df = [c for c in df.columns if c in MODEL_COLUMNS]
@@ -260,7 +255,9 @@ def register_table_callbacks():
                 model_cols_in_df = []
             transcription_cols = [
                 c for c in df.columns
-                if c in model_cols_in_df or "whisper" in c.lower()
+                if c in model_cols_in_df
+                or "whisper" in c.lower()
+                or "tiny_rep" in c.lower()
             ]
             for col in transcription_cols:
                 df[col] = df[col].apply(extract_text_from_transcription)

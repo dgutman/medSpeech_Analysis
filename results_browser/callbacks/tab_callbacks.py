@@ -9,6 +9,7 @@ import logging
 from data_loader import get_data
 from components.tabs.data_table import create_data_table
 from components.tabs.analytics import create_analytics_tab
+from components.tabs.tiny_rep_compare import create_tiny_rep_compare_tab
 from components.tabs.compare import create_compare_tab
 from components.tabs.hallucinations import create_hallucinations_tab
 from components.tabs.audio import create_audio_tab
@@ -72,6 +73,8 @@ def register_tab_callbacks():
                 
                 if active_tab == "analytics-tab":
                     content = create_analytics_tab(df)
+                elif active_tab == "tiny-rep-compare-tab":
+                    content = create_tiny_rep_compare_tab(df)
                 elif active_tab == "compare-tab":
                     content = create_compare_tab(df, wer_method, sample_id)
                 elif active_tab == "hallucinations-tab":

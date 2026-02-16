@@ -24,6 +24,7 @@ def create_layout():
                 dbc.Tabs([
                     dbc.Tab(label="📋 Data Table", tab_id="table-tab"),
                     dbc.Tab(label="📈 Analytics", tab_id="analytics-tab"),
+                    dbc.Tab(label="🔄 Tiny Rep Compare", tab_id="tiny-rep-compare-tab"),
                     dbc.Tab(label="🔍 Compare", tab_id="compare-tab"),
                     dbc.Tab(label="⚠️ Hallucinations", tab_id="hallucinations-tab"),
                     dbc.Tab(label="🎵 Audio Player", tab_id="audio-tab"),
@@ -32,14 +33,37 @@ def create_layout():
                 ], id="main-tabs", active_tab="table-tab")
             ])
         ]),
-        
+
+        # Filters (above table; shown when Data Table tab is active)
+        dbc.Row([
+            dbc.Col([
+                dcc.Dropdown(
+                    id="split-filter",
+                    placeholder="Filter by split...",
+                    clearable=True,
+                    value=None,
+                    options=[],
+                    style={"display": "none"}
+                )
+            ], width=6, className="mb-2"),
+            dbc.Col([
+                dbc.Input(
+                    id="search-input",
+                    placeholder="Search transcriptions...",
+                    type="text",
+                    value="",
+                    style={"display": "none"}
+                )
+            ], width=6, className="mb-2")
+        ], className="mt-3", id="filter-row", style={"display": "none"}),
+
         # Tab Content (pre-populate with table tab since it's the default active tab)
         dbc.Row([
             dbc.Col([
                 html.Div(id="tab-content", children=create_data_table())
             ])
         ], className="mt-4"),
-        
+
         # Hidden stores for compare tab state
         dcc.Store(id="wer-method-store", data="basic"),
         dcc.Store(id="compare-sample-id-store", data=None),
@@ -54,30 +78,7 @@ def create_layout():
         dcc.Store(id="pagination-store", data={"page": 0, "pageSize": 50, "totalRows": 0, "loadedPages": []}),
         # Full list of row IDs for current filter (local pager: no offset in Pixeltable)
         dcc.Store(id="table-row-ids-store", data=None),
-        
-        # Filter components (must be in main layout for callbacks; shown/hidden by callbacks)
-        dbc.Row([
-            dbc.Col([
-                dcc.Dropdown(
-                    id="split-filter",
-                    placeholder="Filter by split...",
-                    clearable=True,
-                    value=None,
-                    options=[],
-                    style={"display": "none"}  # Hidden by default, shown when table tab is active
-                )
-            ], width=6, className="mb-2"),
-            dbc.Col([
-                dbc.Input(
-                    id="search-input",
-                    placeholder="Search transcriptions...",
-                    type="text",
-                    value="",
-                    style={"display": "none"}  # Hidden by default, shown when table tab is active
-                )
-            ], width=6, className="mb-2")
-        ], className="mt-3", id="filter-row", style={"display": "none"}),
-        
+
         # Footer
         dbc.Row([
             dbc.Col([
