@@ -1,0 +1,52 @@
+================================================================================
+Fine-Tuning Metrics Summary
+================================================================================
+
+Model           Baseline WER    Best WER        Improvement     Duration             Epochs    
+--------------------------------------------------------------------------------
+base            0.2908          0.0872          70.01%          1:12:23.298099       9.0       
+small           0.1992          0.0621          68.84%          1:51:30.410250       6.0       
+tiny            0.2846          0.1103          61.24%          0:38:46.182354       7.0       
+
+================================================================================
+Detailed Information:
+================================================================================
+
+📊 BASE Model
+   Model: openai/whisper-base
+   Baseline WER: 0.2908 (29.08%)
+   Best WER: 0.0872 (8.72%)
+   WER Improvement: 0.2036 (70.01% reduction)
+   Training Duration: 1:12:23.298099
+   Start Time: 2025-11-19 20:12:08
+   End Time: 2025-11-19 21:24:31
+   Total Epochs: 9.0
+   Total Steps: 504
+   Batch Size: 24
+   Learning Rate: 1.5e-05
+
+📊 SMALL Model
+   Model: openai/whisper-small
+   Baseline WER: 0.1992 (19.92%)
+   Best WER: 0.0621 (6.21%)
+   WER Improvement: 0.1371 (68.84% reduction)
+   Training Duration: 1:51:30.410250
+   Start Time: 2025-11-19 15:02:44
+   End Time: 2025-11-19 16:54:14
+   Total Epochs: 6.0
+   Total Steps: 504
+   Batch Size: 16
+   Learning Rate: 1.5e-05
+
+📊 TINY Model
+   Model: openai/whisper-tiny
+   Baseline WER: 0.2846 (28.46%)
+   Best WER: 0.1103 (11.03%)
+   WER Improvement: 0.1743 (61.24% reduction)
+   Training Duration: 0:38:46.182354
+   Start Time: 2025-11-19 17:35:35
+   End Time: 2025-11-19 18:14:22
+   Total Epochs: 7.0
+   Total Steps: 294
+   Batch Size: 32
+   Learning Rate: 2e-05

@@ -57,8 +57,8 @@ services:
       # Host path from .env doesn't exist in container, so use container's default location
       # Pixeltable default is ~/.pixeltable/pgdata (for appuser: /home/appuser/.pixeltable/pgdata)
       - PIXELTABLE_PGDATA=/home/appuser/.pixeltable/pgdata
-      # Force production mode with Gunicorn for better performance and reliable caching
-      - USE_GUNICORN=1
+      # Use Gunicorn unless .env has USE_GUNICORN=0 for real dev (Dash dev server). Default 1 for Pixeltable stability.
+      - USE_GUNICORN=${USE_GUNICORN:-1}
       # Use simplified app (set to 0 for full app with all tabs); startup.sh falls back to full app if app_simple.py missing
       - USE_SIMPLE_APP=1
     env_file:

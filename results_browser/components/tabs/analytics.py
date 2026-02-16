@@ -123,61 +123,15 @@ def create_analytics_tab(df):
         wer_df = wer_df.reset_index(drop=True)
         
         # Try to get cached visualizations
-        cached_fig_box = get_cached_visualization("analytics", wer_df, viz_type="box")
         cached_fig_violin = get_cached_visualization("analytics", wer_df, viz_type="violin")
         cached_table_fig = get_cached_visualization("analytics", wer_df, viz_type="table")
-        cached_fig_heatmap = get_cached_visualization("analytics", wer_df, viz_type="heatmap")
-        
+
         # Calculate mean WER for each model (for annotations)
         mean_wer_by_model = wer_df.groupby('Model')['WER'].mean()
         y_max = min(120, wer_df['WER'].max() + 10)
         annotation_y_position = y_max * 0.95  # Position annotations near the top of the plot
-        
-        # Create visualizations (use cache if available)
-        # 1. Box plot comparison
-        if cached_fig_box is not None:
-            fig_box = cached_fig_box
-            logger.info("Using cached box plot")
-        else:
-            fig_box = px.box(
-            wer_df,
-            x='Model',
-            y='WER',
-            title="Word Error Rate Comparison Across Whisper Models",
-            color='Model',
-            labels={"WER": "Word Error Rate (%)", "Model": "Whisper Model"},
-            template="plotly_white"
-        )
-        fig_box.update_layout(
-            title_font_size=16,
-            yaxis=dict(range=[0, y_max]),
-            xaxis_title="",
-            yaxis_title="Word Error Rate (%)",
-            font=dict(size=12),
-            showlegend=False
-        )
-        
-        # Add mean WER annotations to box plot
-        annotations_box = []
-        for model in mean_wer_by_model.index:
-            mean_value = mean_wer_by_model[model]
-            annotations_box.append(
-                dict(
-                    x=model,
-                    y=annotation_y_position,
-                    text=f"μ={mean_value:.1f}%",
-                    showarrow=False,
-                    font=dict(size=11, color='#2c3e50', family='Arial Black'),
-                    bgcolor='rgba(255, 255, 255, 0.85)',
-                    bordercolor='#2c3e50',
-                    borderwidth=1.5,
-                    borderpad=4
-                )
-            )
-            fig_box.update_layout(annotations=annotations_box)
-            cache_visualization("analytics", wer_df, fig_box, viz_type="box")
-        
-        # 2. Violin plot for distribution shape
+
+        # Violin plot for WER distribution
         if cached_fig_violin is not None:
             fig_violin = cached_fig_violin
             logger.info("Using cached violin plot")
@@ -303,76 +257,13 @@ def create_analytics_tab(df):
                 margin=dict(l=20, r=20, t=60, b=20)
             )
             cache_visualization("analytics", wer_df, table_fig, viz_type="table")
-        
-        # 4. Heatmap of WER by sample and model
-        # Ensure ID column is string and unique before pivoting
-        wer_df_heatmap = wer_df.copy()
-        wer_df_heatmap['ID'] = wer_df_heatmap['ID'].astype(str)
-        
-        # Final deduplication check before pivot
-        initial_heatmap_count = len(wer_df_heatmap)
-        wer_df_heatmap = wer_df_heatmap.drop_duplicates(subset=['ID', 'Model'], keep='first')
-        if len(wer_df_heatmap) != initial_heatmap_count:
-            logger.warning(f"Removed {initial_heatmap_count - len(wer_df_heatmap)} duplicate ID+Model combinations before heatmap pivot")
-        
-        # Use pivot_table to handle any remaining duplicate ID/Model combinations by taking the mean
-        fig_heatmap = None
-        if cached_fig_heatmap is not None:
-            fig_heatmap = cached_fig_heatmap
-            logger.info("Using cached heatmap")
-        else:
-            try:
-                pivot_df = wer_df_heatmap.pivot_table(index='ID', columns='Model', values='WER', aggfunc='mean')
-                fig_heatmap = px.imshow(
-                    pivot_df,
-                    labels=dict(x="Model", y="Sample ID", color="WER"),
-                    color_continuous_scale='Reds',
-                    aspect='auto',
-                    title="WER Heatmap by Sample and Model"
-                )
-                fig_heatmap.update_layout(
-                    yaxis=dict(title='Sample ID'),
-                    xaxis=dict(title='Whisper Model'),
-                    coloraxis_colorbar=dict(title="Word Error Rate (%)"),
-                    font=dict(size=10),
-                    title_font_size=16,
-                    height=400
-                )
-                cache_visualization("analytics", wer_df, fig_heatmap, viz_type="heatmap")
-            except ValueError as e:
-                logger.error(f"Error creating pivot table for heatmap: {e}")
-                logger.error(f"wer_df_heatmap shape: {wer_df_heatmap.shape}")
-                logger.error(f"Duplicate IDs: {wer_df_heatmap['ID'].duplicated().sum()}")
-                logger.error(f"Duplicate ID+Model: {wer_df_heatmap.duplicated(subset=['ID', 'Model']).sum()}")
-                # Create a placeholder figure instead of crashing
-                fig_heatmap = go.Figure()
-                fig_heatmap.add_annotation(
-                    text=f"Heatmap unavailable: {str(e)}<br>Check logs for details.",
-                    xref="paper", yref="paper",
-                    x=0.5, y=0.5, showarrow=False,
-                    font=dict(size=14, color="red")
-                )
-                fig_heatmap.update_layout(
-                    title="WER Heatmap by Sample and Model (Error)",
-                    height=400
-                )
-        
+
         return dbc.Container([
             dbc.Row([
-                dbc.Col([
-                    dcc.Graph(figure=fig_box)
-                ], width=6),
-                dbc.Col([
-                    dcc.Graph(figure=fig_violin)
-                ], width=6)
+                dbc.Col([dcc.Graph(figure=fig_violin)], width=12)
             ], className="mb-4"),
             dbc.Row([
-                dbc.Col([
-                    dcc.Graph(figure=table_fig)
-                ], width=6),
-                dbc.Col([
-                    dcc.Graph(figure=fig_heatmap) if fig_heatmap is not None else html.Div("Heatmap unavailable")
-                ], width=6)
+                dbc.Col([dcc.Graph(figure=table_fig)], width=12)
             ])
         ])
         

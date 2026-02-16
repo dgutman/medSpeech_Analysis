@@ -27,7 +27,8 @@ def create_layout():
                     dbc.Tab(label="🔍 Compare", tab_id="compare-tab"),
                     dbc.Tab(label="⚠️ Hallucinations", tab_id="hallucinations-tab"),
                     dbc.Tab(label="🎵 Audio Player", tab_id="audio-tab"),
-                    dbc.Tab(label="🤖 Models", tab_id="models-tab")
+                    dbc.Tab(label="🤖 Models", tab_id="models-tab"),
+                    dbc.Tab(label="🎯 Fine Tuning", tab_id="fine-tuning-tab"),
                 ], id="main-tabs", active_tab="table-tab")
             ])
         ]),
@@ -51,6 +52,8 @@ def create_layout():
 
         # Pagination store (must be in main layout, not in tab content)
         dcc.Store(id="pagination-store", data={"page": 0, "pageSize": 50, "totalRows": 0, "loadedPages": []}),
+        # Full list of row IDs for current filter (local pager: no offset in Pixeltable)
+        dcc.Store(id="table-row-ids-store", data=None),
         
         # Filter components (must be in main layout for callbacks; shown/hidden by callbacks)
         dbc.Row([

@@ -38,6 +38,8 @@ def create_data_table():
             children=dag.AgGrid(
                 id="data-grid",
                 columnDefs=columnDefs,
+                # Required: set row model at component level so cacheBlockSize etc. are valid
+                rowModelType="infinite",
                 # Don't set rowData with infinite row model - data comes via getRowsResponse
                 defaultColDef={
                     "resizable": True,
@@ -47,14 +49,13 @@ def create_data_table():
                 },
                 dashGridOptions={
                     "pagination": True,
-                    "paginationPageSize": 50,  # Show 50 rows per page
+                    "paginationPageSize": 50,
                     "paginationAutoPageSize": False,
                     "suppressRowClickSelection": False,
                     "rowSelection": "single",
-                    "rowModelType": "infinite",  # Use infinite row model for server-side pagination
-                    "cacheBlockSize": 50,  # Load 50 rows per block (same as page size)
-                    "maxBlocksInCache": 10,  # Keep up to 10 blocks (500 rows) in cache
-                    "infiniteInitialRowCount": 6661,  # Will be updated by callback, but needs initial value
+                    "cacheBlockSize": 50,
+                    "maxBlocksInCache": 10,
+                    "infiniteInitialRowCount": 6661,  # Updated by callback
                 },
                 style={"height": "600px", "width": "100%"}
             )

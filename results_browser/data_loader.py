@@ -15,9 +15,11 @@ if 'PIXELTABLE_PGDATA' not in os.environ or not os.environ.get('PIXELTABLE_PGDAT
     if os.path.exists('/home/appuser'):
         os.environ['PIXELTABLE_PGDATA'] = container_pgdata
 
+import operator
 import pandas as pd
 import pixeltable as pxt
 from datetime import datetime
+from functools import reduce
 import logging
 import time
 
@@ -296,32 +298,90 @@ def load_pixeltable_data_paginated(limit=None, offset=0, filters=None):
                 search_term = filters['search_term']
                 query = query.where(local_table.transcription.ilike(f'%{search_term}%'))
         
-        # Apply pagination - Pixeltable supports limit and offset
-        if limit is not None:
-            query = query.limit(limit)
+        # Apply pagination: offset first (skip rows), then limit (take rows). Order matters.
         if offset > 0:
             query = query.offset(offset)
+        if limit is not None:
+            query = query.limit(limit)
         
         # Execute query and convert to pandas
         result = query.collect().to_pandas()
-        
-        logger.debug(f"Loaded {len(result)} records (offset={offset}, limit={limit}, filters={filters})")
-        
+        if offset >= 50:
+            logger.info(
+                f"Paginated load: offset={offset} limit={limit} -> {len(result)} rows (filters={filters})"
+            )
+        else:
+            logger.debug(f"Loaded {len(result)} records (offset={offset}, limit={limit}, filters={filters})")
         return result
-        
-        # Remove duplicate entries based on 'id' column (keep first occurrence)
-        if 'id' in result.columns:
-            initial_count = len(result)
-            result = result.drop_duplicates(subset=['id'], keep='first')
-            final_count = len(result)
-            if initial_count != final_count:
-                logger.debug(f"Removed {initial_count - final_count} duplicate entries")
-        
-        logger.debug(f"Loaded {len(result)} records (offset={offset}, limit={limit})")
-        return result
-        
+
     except Exception as e:
         logger.error(f"Error loading paginated data: {e}")
+        return pd.DataFrame()
+
+
+def load_paginated_index(filters=None):
+    """
+    Load the full ordered list of row IDs (and optionally row_idx) for the current filter.
+    Used for "local paging": we have no offset in Pixeltable, so we fetch the full index
+    and slice it client-side to know which IDs to fetch for each page.
+
+    Returns:
+        list: Ordered list of row IDs (e.g. strings or ints) matching filters.
+    """
+    try:
+        local_table = get_pixeltable_table()
+        # Select only id (and row_idx for ordering if present)
+        if hasattr(local_table, "row_idx"):
+            query = local_table.select(local_table.id, local_table.row_idx).order_by(local_table.row_idx)
+        elif hasattr(local_table, "id"):
+            query = local_table.select(local_table.id).order_by(local_table.id)
+        else:
+            logger.warning("Table has no id column for paginated index")
+            return []
+
+        if filters:
+            if "split" in filters and filters["split"]:
+                query = query.where(local_table.split == filters["split"])
+            if "search_term" in filters and filters["search_term"]:
+                search_term = filters["search_term"]
+                query = query.where(local_table.transcription.ilike(f"%{search_term}%"))
+
+        df = query.collect().to_pandas()
+        if df is None or df.empty or "id" not in df.columns:
+            return []
+        ids = df["id"].tolist()
+        logger.info(f"Loaded paginated index: {len(ids)} row IDs (filters={filters})")
+        return ids
+    except Exception as e:
+        logger.error(f"Error loading paginated index: {e}", exc_info=True)
+        return []
+
+
+def load_rows_by_ids(ids):
+    """
+    Load full row data for the given list of row IDs.
+    Pixeltable has no offset; we use this after slicing the full index for the current page.
+    """
+    if not ids:
+        return pd.DataFrame()
+    try:
+        local_table = get_pixeltable_table()
+        id_col = local_table.id
+        # Build (id == id1) | (id == id2) | ... (Pixeltable may not have isin())
+        condition = reduce(operator.or_, (id_col == i for i in ids))
+        query = local_table.select().where(condition)
+        result = query.collect().to_pandas()
+        if result is None or result.empty:
+            return pd.DataFrame()
+        # Preserve order of requested ids (collect() may return in arbitrary order)
+        if "id" in result.columns and len(ids) > 1:
+            id_to_order = {vid: i for i, vid in enumerate(ids)}
+            result["_order"] = result["id"].map(id_to_order)
+            result = result.sort_values("_order").drop(columns=["_order"])
+        logger.debug(f"Loaded {len(result)} rows by ids (requested {len(ids)})")
+        return result
+    except Exception as e:
+        logger.error(f"Error loading rows by ids: {e}", exc_info=True)
         return pd.DataFrame()
 
 

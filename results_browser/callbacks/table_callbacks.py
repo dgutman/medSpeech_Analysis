@@ -6,7 +6,12 @@ from dash import Input, Output, State, callback_context
 from dash.exceptions import PreventUpdate
 import logging
 
-from data_loader import load_pixeltable_data_paginated, get_total_count
+from data_loader import (
+    load_pixeltable_data_paginated,
+    load_paginated_index,
+    load_rows_by_ids,
+    get_total_count,
+)
 from utils import extract_text_from_transcription
 from config import app
 
@@ -16,26 +21,35 @@ logger = logging.getLogger(__name__)
 def register_table_callbacks():
     """Register all table-related callbacks"""
     
+    # 1) Filter visibility only - always in layout, safe to update
     @app.callback(
-        [Output("data-grid", "columnDefs"),
-         Output("data-grid", "dashGridOptions"),
-         Output("split-filter", "style"),
+        [Output("split-filter", "style"),
          Output("search-input", "style"),
          Output("filter-row", "style")],
+        [Input("main-tabs", "active_tab")],
+        prevent_initial_call=False,
+    )
+    def update_filter_visibility(active_tab):
+        is_table_tab = active_tab == "table-tab"
+        style = {"display": "block", "width": "100%"} if is_table_tab else {"display": "none"}
+        row_style = {"display": "flex"} if is_table_tab else {"display": "none"}
+        return style, style, row_style
+    
+    # 2) Data grid config - only when table tab is active (data-grid exists)
+    @app.callback(
+        [Output("data-grid", "columnDefs"),
+         Output("data-grid", "dashGridOptions")],
         [Input("main-tabs", "active_tab"),
          Input("split-filter", "value"),
          Input("search-input", "value"),
-         Input("dataset-stats-store", "data")],  # Trigger when stats are loaded
-        prevent_initial_call=False  # Run initially to configure the grid
+         Input("dataset-stats-store", "data")],
+        prevent_initial_call=False,
     )
     def update_data_grid_config(active_tab, split_filter, search_term, dataset_stats_data):
-        """Update grid configuration and column definitions"""
-        # Show/hide filters based on active tab
-        is_table_tab = active_tab == "table-tab"
-        filter_style = {"display": "block", "width": "100%"} if is_table_tab else {"display": "none"}
-        filter_row_style = {"display": "flex"} if is_table_tab else {"display": "none"}
+        """Update grid configuration and column definitions. PreventUpdate when not on table tab so we never output to missing data-grid."""
+        if active_tab != "table-tab":
+            raise PreventUpdate
         
-        # Default grid options (always return infinite model to avoid conflicts)
         default_grid_options = {
             "pagination": True,
             "paginationPageSize": 50,
@@ -48,17 +62,18 @@ def register_table_callbacks():
             "infiniteInitialRowCount": 0,
         }
         
-        # Only update when on table tab
-        if not is_table_tab:
-            return [], default_grid_options, filter_style, filter_style, filter_row_style
-        
         try:
-            # Get total count for infinite row model
-            total_count = get_total_count()
-            
-            # Get column definitions from a sample row
-            sample_df = load_pixeltable_data_paginated(limit=1, offset=0)
-            
+            filters = {}
+            if split_filter:
+                filters["split"] = split_filter
+            if search_term:
+                filters["search_term"] = search_term
+            total_count = get_total_count(filters=filters)
+
+            # Get column definitions from one sample row (no offset: use first id from index)
+            ids = load_paginated_index(filters=filters)
+            sample_df = load_rows_by_ids(ids[:1]) if ids else None
+
             if sample_df is None or sample_df.empty:
                 # Fallback: use minimal default columns if no data available
                 columnDefs = [
@@ -159,89 +174,101 @@ def register_table_callbacks():
                 "infiniteInitialRowCount": total_count,
             }
             
-            return columnDefs, grid_options, filter_style, filter_style, filter_row_style
+            return columnDefs, grid_options
             
         except Exception as e:
             logger.error(f"Error updating data grid config: {e}", exc_info=True)
-            empty_style = {"display": "block", "width": "100%"} if active_tab == "table-tab" else {"display": "none"}
-            empty_row_style = {"display": "flex"} if active_tab == "table-tab" else {"display": "none"}
-            return [], default_grid_options, empty_style, empty_style, empty_row_style
-    
+            return [], default_grid_options
+
+    # Populate the full row-ID list for the current filter (local pager: Pixeltable has no offset).
+    @app.callback(
+        Output("table-row-ids-store", "data"),
+        [Input("main-tabs", "active_tab"),
+         Input("split-filter", "value"),
+         Input("search-input", "value")],
+        prevent_initial_call=False,
+    )
+    def update_table_row_ids_store(active_tab, split_filter, search_term):
+        """Load full ordered list of row IDs when on table tab or when filters change."""
+        if active_tab != "table-tab":
+            return None
+        filters = {}
+        if split_filter:
+            filters["split"] = split_filter
+        if search_term:
+            filters["search_term"] = search_term
+        ids = load_paginated_index(filters=filters)
+        return ids
+
     @app.callback(
         Output("data-grid", "getRowsResponse"),
         [Input("data-grid", "getRowsRequest"),
          Input("split-filter", "value"),
          Input("search-input", "value"),
-         Input("data-grid", "dashGridOptions")],  # Trigger when grid options are set
-        prevent_initial_call=False  # Allow initial call to handle first load
+         Input("main-tabs", "active_tab")],
+        [State("table-row-ids-store", "data")],
+        prevent_initial_call=False,
     )
-    def get_rows(get_rows_request, split_filter, search_term, grid_options):
-        """Server-side pagination: Load data for the requested page using infinite row model"""
-        # Check what triggered this callback
+    def get_rows(get_rows_request, split_filter, search_term, active_tab, row_ids_store):
+        """Server-side pagination via local pager: we have the full index in store, slice it and fetch only those rows by ID."""
+        if active_tab != "table-tab":
+            raise PreventUpdate
+
         ctx = callback_context
-        triggered_id = None
-        if ctx.triggered:
-            triggered_id = ctx.triggered[0]['prop_id']
-        
-        # If no request from AG Grid yet, but grid options were just set, create initial request
+        triggered_id = ctx.triggered[0]["prop_id"] if ctx.triggered else None
+
         if get_rows_request is None:
-            if triggered_id and 'dashGridOptions' in triggered_id:
-                logger.info("Grid options set, creating initial request for rows 0-50")
-                get_rows_request = {"startRow": 0, "endRow": 50}
-            elif triggered_id:
-                logger.info(f"getRowsRequest is None, but callback triggered by: {triggered_id}")
-                # If triggered by filter changes, create request
-                if 'split-filter' in triggered_id or 'search-input' in triggered_id:
-                    logger.info("Filter changed, creating request for rows 0-50")
-                    get_rows_request = {"startRow": 0, "endRow": 50}
-                else:
-                    raise PreventUpdate
-            else:
-                logger.debug("getRowsRequest is None, no triggers")
-                raise PreventUpdate
-        
+            logger.info("getRowsRequest is None, synthesizing first block (0-50) for initial load")
+            get_rows_request = {"startRow": 0, "endRow": 50}
+
         try:
-            # Extract pagination info from AG Grid infinite row model request
-            start_row = get_rows_request.get("startRow", 0)
-            end_row = get_rows_request.get("endRow", 50)
-            page_size = end_row - start_row
-            
-            logger.info(f"Loading rows {start_row} to {end_row} (page_size={page_size})")
-            
-            # Build filters for database query
+            start_row = int(get_rows_request.get("startRow") or get_rows_request.get("start_row") or 0)
+            end_row = int(get_rows_request.get("endRow") or get_rows_request.get("end_row") or 50)
+            page_size = max(1, end_row - start_row)
+
             filters = {}
             if split_filter:
-                filters['split'] = split_filter
+                filters["split"] = split_filter
             if search_term:
-                filters['search_term'] = search_term
-            
-            # Get total count with filters applied
-            total_count = get_total_count(filters=filters)
-            
-            # Load ONLY the requested page with filters applied at database level
-            df = load_pixeltable_data_paginated(limit=page_size, offset=start_row, filters=filters)
-            
+                filters["search_term"] = search_term
+
+            # Use store if populated; otherwise load index on the fly (e.g. first run before store callback)
+            if row_ids_store is not None and isinstance(row_ids_store, list):
+                all_ids = row_ids_store
+            else:
+                all_ids = load_paginated_index(filters=filters)
+
+            total_count = len(all_ids)
+            ids_for_page = all_ids[start_row:end_row]
+
+            logger.info(
+                f"Loading page: startRow={start_row} endRow={end_row} (ids slice len={len(ids_for_page)}, total={total_count}) trigger={triggered_id!r}"
+            )
+
+            if not ids_for_page:
+                return {"rowData": [], "rowCount": total_count}
+
+            df = load_rows_by_ids(ids_for_page)
             if df is None or df.empty:
                 return {"rowData": [], "rowCount": total_count}
-            
-            # Process whisper columns to extract text
-            whisper_cols = [col for col in df.columns if 'whisper' in col.lower()]
-            for col in whisper_cols:
+
+            # Extract text for model/whisper columns so we don't show [object Object]
+            try:
+                from db_helpers import MODEL_COLUMNS
+                model_cols_in_df = [c for c in df.columns if c in MODEL_COLUMNS]
+            except ImportError:
+                model_cols_in_df = []
+            transcription_cols = [
+                c for c in df.columns
+                if c in model_cols_in_df or "whisper" in c.lower()
+            ]
+            for col in transcription_cols:
                 df[col] = df[col].apply(extract_text_from_transcription)
-            
-            # Convert to records for AG Grid
-            row_data = df.to_dict('records')
-            
+
+            row_data = df.to_dict("records")
             logger.info(f"Returning {len(row_data)} rows (total: {total_count})")
-            
-            # Return response in AG Grid infinite row model format
-            # rowCount should be the total number of rows (not just this page)
-            # AG Grid uses this to determine pagination and if more data is available
-            return {
-                "rowData": row_data,
-                "rowCount": total_count  # Total count for pagination
-            }
-            
+            return {"rowData": row_data, "rowCount": total_count}
+
         except Exception as e:
             logger.error(f"Error loading rows: {e}", exc_info=True)
             return {"rowData": [], "rowCount": 0}

@@ -1,2 +1,7 @@
 model_cache/**
 .env
+origVersion/*
+*.json
+max_ongoing***
+benchmark_resu**
+*.log

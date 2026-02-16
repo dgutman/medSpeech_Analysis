@@ -128,9 +128,10 @@ if [ "$FORCE_PRODUCTION_MODE" = "1" ] || [ "$USE_GUNICORN" = "1" ]; then
     # Preload warms the app (and Pixeltable connection) once in the single process.
     exec gunicorn -b 0.0.0.0:8050 --workers 1 --timeout 120 --preload $APP_MODULE
 elif [ -f "app.py" ] && [ -w "app.py" ]; then
-    echo "🔄 Development mode detected - using Dash dev server"
-    # Pixeltable: multiple threads in the same process are NOT supported. Keep threading off.
-    export DASH_USE_RELOADER=${DASH_USE_RELOADER:-0}
+    echo "🔄 Development mode - using Dash dev server (hot reload on)"
+    # Hot reload: default on. Set DASH_USE_RELOADER=0 in .env if you see Pixeltable/reloader issues.
+    export DASH_USE_RELOADER=${DASH_USE_RELOADER:-1}
+    # Pixeltable: multiple threads in same process NOT supported. Keep threading off.
     export DASH_THREADED=${DASH_THREADED:-0}
     exec python app.py
 else

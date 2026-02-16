@@ -9,3 +9,5 @@ archived/
 **.env/**
 .pyenv/
 .pyenvTrain/
+fine_tuning_data_staging/**
+__pycache__/*

@@ -1,0 +1,48 @@
+# Exclude large files from Docker build context
+
+# Exclude all checkpoint directories (they contain huge model files)
+Fine-Tuning-Whisper-on-Custom-Dataset/**/checkpoint-*/
+
+# But keep baseline_wer.txt and trainer_state.json files
+!Fine-Tuning-Whisper-on-Custom-Dataset/**/baseline_wer.txt
+!Fine-Tuning-Whisper-on-Custom-Dataset/**/checkpoint-*/trainer_state.json
+
+# Exclude other large directories
+Fine-Tuning-Whisper-on-Custom-Dataset/wandb/
+Fine-Tuning-Whisper-on-Custom-Dataset/**/runs/
+Fine-Tuning-Whisper-on-Custom-Dataset/**/best_model/
+Fine-Tuning-Whisper-on-Custom-Dataset/**/*.safetensors
+Fine-Tuning-Whisper-on-Custom-Dataset/**/*.pt
+Fine-Tuning-Whisper-on-Custom-Dataset/**/*.pth
+Fine-Tuning-Whisper-on-Custom-Dataset/**/*.bin
+Fine-Tuning-Whisper-on-Custom-Dataset/**/model.safetensors
+Fine-Tuning-Whisper-on-Custom-Dataset/**/optimizer.pt
+Fine-Tuning-Whisper-on-Custom-Dataset/**/scheduler.pt
+Fine-Tuning-Whisper-on-Custom-Dataset/**/rng_state.pth
+
+# Exclude backup directories
+Fine-Tuning-Whisper-on-Custom-Dataset/backup_*/
+
+# Exclude other large files
+Fine-Tuning-Whisper-on-Custom-Dataset/**/*.ipynb
+Fine-Tuning-Whisper-on-Custom-Dataset/**/*.py
+Fine-Tuning-Whisper-on-Custom-Dataset/**/*.sh
+Fine-Tuning-Whisper-on-Custom-Dataset/**/*.md
+Fine-Tuning-Whisper-on-Custom-Dataset/**/*.txt
+!Fine-Tuning-Whisper-on-Custom-Dataset/**/baseline_wer.txt
+
+# Exclude other directories we don't need
+Fine-Tuning-Whisper-on-Custom-Dataset/readme_images/
+Fine-Tuning-Whisper-on-Custom-Dataset/**/tmp*/
+
+# General exclusions
+**/__pycache__/
+**/*.pyc
+**/.git/
+**/.venv/
+**/venv/
+**/node_modules/
+**/.pixeltable/
+**/cache/
+**/wandb/
+

@@ -1,0 +1,25 @@
+# Exclude large files from Docker build context
+
+# Exclude the entire Fine-Tuning directory from build context
+# We'll use a pre-built staging directory instead
+Fine-Tuning-Whisper-on-Custom-Dataset/
+
+# General exclusions
+**/__pycache__/
+**/*.pyc
+**/.git/
+**/.venv/
+**/venv/
+**/node_modules/
+**/.pixeltable/
+**/cache/
+**/wandb/
+**/*.safetensors
+**/*.pt
+**/*.pth
+**/*.bin
+**/checkpoint-*/
+**/best_model/
+**/runs/
+**/backup_*/
+
