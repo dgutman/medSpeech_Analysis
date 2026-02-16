@@ -28,6 +28,7 @@ API_URL = os.environ.get("API_URL", "http://localhost:8000")
 DATA_DIR = os.environ.get("DATA_DIR", "/scr/dagutman/devel/medSpeech_Analysis/eleven_octo_cats")
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "4"))  # Number of parallel requests
 MODEL = os.environ.get("MODEL", None)  # Optional: model to use for all files (e.g., "large-v3", "base", "tiny")
+MAX_FILES = int(os.environ.get("MAX_FILES", "0"))  # Limit number of files (0 = process all)
 
 def get_wav_files(data_dir: str) -> List[str]:
     """Get all WAV files from the data directory."""
@@ -133,6 +134,9 @@ def transcribe_file(file_name: str, api_url: str, model: Optional[str] = None) -
         
         total_time = time.time() - start_time
         
+        # Get transcription text - save full text for analysis
+        transcription_text = result.get("text", "")
+        
         return {
             "file": file_name,
             "status": "success",
@@ -141,7 +145,8 @@ def transcribe_file(file_name: str, api_url: str, model: Optional[str] = None) -
             "audio_duration": result.get("duration", 0),
             "model": result.get("model", "unknown"),
             "language": result.get("language", "unknown"),
-            "text_length": len(result.get("text", "")),
+            "text": transcription_text,  # Full transcription text
+            "text_length": len(transcription_text),
             "error": None
         }
     except Exception as e:
@@ -178,7 +183,13 @@ def run_stress_test(data_dir: str, api_url: str, max_workers: int = 4, model: Op
         print(f"No WAV files found in {data_dir}")
         return
     
-    print(f"Found {total_files} WAV files to process")
+    # Limit files if MAX_FILES is set
+    if MAX_FILES > 0 and total_files > MAX_FILES:
+        wav_files = wav_files[:MAX_FILES]
+        print(f"Found {total_files} WAV files, limiting to first {MAX_FILES} for testing")
+        total_files = MAX_FILES
+    else:
+        print(f"Found {total_files} WAV files to process")
     print(f"Starting stress test with {max_workers} parallel workers...")
     print(f"Submitting all {total_files} requests in parallel...")
     print()
@@ -194,6 +205,14 @@ def run_stress_test(data_dir: str, api_url: str, max_workers: int = 4, model: Op
     # Track periodic snapshots (every 500 files)
     gpu_snapshots_periodic = []
     snapshot_interval = 500
+    
+    # Track completion times for time-windowed throughput analysis
+    completion_times = []  # List of (completion_time, audio_duration) tuples
+    window_size = 10.0  # 10-second windows for throughput calculation
+    throughput_windows = []  # List of (window_start, window_end, count, audio_seconds) tuples
+    last_window_end = start_time
+    current_window_count = 0
+    current_window_audio = 0.0
     
     # Submit ALL tasks immediately (not one at a time)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -218,24 +237,68 @@ def run_stress_test(data_dir: str, api_url: str, max_workers: int = 4, model: Op
         for future in as_completed(future_to_file):
             file_name = future_to_file[future]
             in_flight -= 1
+            completion_time = time.time()
             try:
                 result = future.result()
+                result["completion_time"] = completion_time  # Track when it completed
                 results.append(result)
                 completed += 1
+                
+                # Track completion for time-windowed throughput
+                audio_dur = result.get("audio_duration", 0) if result.get("status") == "success" else 0
+                completion_times.append((completion_time, audio_dur))
+                
+                # Update current window
+                while completion_time >= last_window_end + window_size:
+                    # Save current window
+                    if current_window_count > 0:
+                        throughput_windows.append((
+                            last_window_end,
+                            last_window_end + window_size,
+                            current_window_count,
+                            current_window_audio
+                        ))
+                    # Start new window
+                    last_window_end += window_size
+                    current_window_count = 0
+                    current_window_audio = 0.0
+                
+                # Add to current window
+                if result.get("status") == "success":
+                    current_window_count += 1
+                    current_window_audio += audio_dur
                 
                 # Calculate and report throughput every N files
                 if completed % throughput_report_interval == 0:
                     elapsed = time.time() - start_time
-                    throughput = completed / elapsed if elapsed > 0 else 0
+                    cumulative_throughput = completed / elapsed if elapsed > 0 else 0
+                    
+                    # Calculate recent throughput (last window if available, or last 10 seconds)
+                    recent_throughput = 0.0
+                    recent_audio_throughput = 0.0
+                    if throughput_windows:
+                        last_window = throughput_windows[-1]
+                        recent_throughput = last_window[2] / window_size
+                        recent_audio_throughput = last_window[3] / window_size
+                    elif elapsed >= window_size:
+                        # Use last window_size seconds
+                        recent_completions = [ct for ct in completion_times if ct[0] >= completion_time - window_size]
+                        recent_throughput = len(recent_completions) / window_size
+                        recent_audio_throughput = sum(ct[1] for ct in recent_completions) / window_size
+                    
                     remaining = total_files - completed
-                    eta_seconds = remaining / throughput if throughput > 0 else 0
+                    eta_seconds = remaining / cumulative_throughput if cumulative_throughput > 0 else 0
                     eta_minutes = eta_seconds / 60
                     
                     print(f"\n{'='*80}")
                     print(f"📊 Throughput Report (at {completed}/{total_files} files)")
                     print(f"{'='*80}")
                     print(f"  Elapsed time: {elapsed:.1f}s ({elapsed/60:.1f} minutes)")
-                    print(f"  Throughput: {throughput:.2f} files/second")
+                    print(f"  Cumulative throughput: {cumulative_throughput:.2f} messages/second")
+                    if recent_throughput > 0:
+                        print(f"  Recent throughput (last {window_size}s): {recent_throughput:.2f} messages/second")
+                        if recent_audio_throughput > 0:
+                            print(f"  Recent audio throughput: {recent_audio_throughput:.2f} audio-seconds/second")
                     print(f"  Remaining: {remaining} files")
                     print(f"  Estimated time remaining: {eta_minutes:.1f} minutes ({eta_seconds:.0f} seconds)")
                     print(f"{'='*80}\n")
@@ -331,8 +394,47 @@ def run_stress_test(data_dir: str, api_url: str, max_workers: int = 4, model: Op
         print()
         print(f"Total audio duration: {sum(audio_durations):.1f} seconds ({sum(audio_durations)/60:.1f} minutes)")
         print(f"Total inference time: {sum(inference_times):.2f} seconds ({sum(inference_times)/60:.2f} minutes)")
-        print(f"Throughput: {len(successful) / total_time:.2f} files/second")
+        print()
+        print("=== Throughput Statistics ===")
+        overall_throughput = len(successful) / total_time if total_time > 0 else 0
+        audio_throughput = sum(audio_durations) / total_time if total_time > 0 else 0
+        print(f"Overall throughput: {overall_throughput:.2f} messages/second")
+        print(f"Audio throughput: {audio_throughput:.2f} audio-seconds/second")
         print(f"Average speedup: {sum(audio_durations) / total_time:.2f}x real-time")
+        
+        # Calculate peak and time-windowed throughput
+        if throughput_windows:
+            window_throughputs = [w[2] / window_size for w in throughput_windows]
+            window_audio_throughputs = [w[3] / window_size for w in throughput_windows]
+            
+            peak_throughput = max(window_throughputs) if window_throughputs else 0
+            peak_audio_throughput = max(window_audio_throughputs) if window_audio_throughputs else 0
+            avg_window_throughput = statistics.mean(window_throughputs) if window_throughputs else 0
+            avg_window_audio_throughput = statistics.mean(window_audio_throughputs) if window_audio_throughputs else 0
+            
+            print()
+            print(f"Peak throughput ({window_size}s window): {peak_throughput:.2f} messages/second")
+            if peak_audio_throughput > 0:
+                print(f"Peak audio throughput ({window_size}s window): {peak_audio_throughput:.2f} audio-seconds/second")
+            print(f"Average window throughput: {avg_window_throughput:.2f} messages/second")
+            if avg_window_audio_throughput > 0:
+                print(f"Average window audio throughput: {avg_window_audio_throughput:.2f} audio-seconds/second")
+            
+            # Calculate throughput excluding warmup (first 30 seconds)
+            warmup_period = 30.0
+            steady_state_windows = [
+                w for w in throughput_windows 
+                if w[0] >= start_time + warmup_period
+            ]
+            if steady_state_windows:
+                steady_throughputs = [w[2] / window_size for w in steady_state_windows]
+                steady_audio_throughputs = [w[3] / window_size for w in steady_state_windows]
+                steady_avg = statistics.mean(steady_throughputs) if steady_throughputs else 0
+                steady_audio_avg = statistics.mean(steady_audio_throughputs) if steady_audio_throughputs else 0
+                print()
+                print(f"Steady-state throughput (excluding first {warmup_period}s): {steady_avg:.2f} messages/second")
+                if steady_audio_avg > 0:
+                    print(f"Steady-state audio throughput: {steady_audio_avg:.2f} audio-seconds/second")
     
     if failed:
         print()
@@ -348,6 +450,47 @@ def run_stress_test(data_dir: str, api_url: str, max_workers: int = 4, model: Op
             server_config = config_response.json()
     except Exception as e:
         print(f"Warning: Could not fetch server config: {e}")
+    
+    # Calculate final window if test ended mid-window
+    if completion_times:
+        final_window_end = time.time()
+        if final_window_end > last_window_end:
+            if current_window_count > 0:
+                throughput_windows.append((
+                    last_window_end,
+                    final_window_end,
+                    current_window_count,
+                    current_window_audio
+                ))
+    
+    # Calculate throughput statistics for JSON output
+    throughput_stats = {}
+    if throughput_windows:
+        window_throughputs = [w[2] / window_size for w in throughput_windows]
+        window_audio_throughputs = [w[3] / window_size for w in throughput_windows if w[1] > w[0]]
+        
+        throughput_stats = {
+            "window_size_seconds": window_size,
+            "num_windows": len(throughput_windows),
+            "peak_throughput_messages_per_second": max(window_throughputs) if window_throughputs else 0,
+            "average_window_throughput_messages_per_second": statistics.mean(window_throughputs) if window_throughputs else 0,
+            "min_window_throughput_messages_per_second": min(window_throughputs) if window_throughputs else 0,
+            "throughput_windows": [
+                {
+                    "window_start": w[0],
+                    "window_end": w[1],
+                    "messages": w[2],
+                    "audio_seconds": w[3],
+                    "throughput_messages_per_second": w[2] / window_size,
+                    "audio_throughput_per_second": w[3] / (w[1] - w[0]) if w[1] > w[0] else 0
+                }
+                for w in throughput_windows
+            ]
+        }
+        
+        if window_audio_throughputs:
+            throughput_stats["peak_audio_throughput_per_second"] = max(window_audio_throughputs)
+            throughput_stats["average_audio_throughput_per_second"] = statistics.mean(window_audio_throughputs)
     
     # Save detailed results to JSON with timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -377,7 +520,9 @@ def run_stress_test(data_dir: str, api_url: str, max_workers: int = 4, model: Op
                 "successful": len(successful),
                 "failed": len(failed),
                 "total_wall_clock_time": total_time,
+                "overall_throughput_messages_per_second": len(successful) / total_time if total_time > 0 else 0,
             },
+            "throughput_analysis": throughput_stats,
             "results": results
         }, f, indent=2)
     

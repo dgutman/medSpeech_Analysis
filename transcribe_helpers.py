@@ -20,12 +20,26 @@ async def transcribe_audio(audio_path: str, model: str = "base", api_url: str = 
         Full JSON response with text, model, language, duration, inference_time_seconds
     """
     try:
-        if not os.path.exists(audio_path):
-            return {"error": f"Audio file not found: {audio_path}"}
-        
-        # Map host path to container path
-        filename = os.path.basename(audio_path)
-        container_file_path = f"{container_path}/{filename}"
+        # Check if path is already a container path
+        if audio_path.startswith('/data'):
+            # Already a container path, use it directly
+            container_file_path = audio_path
+        else:
+            # Host path - check if it exists, then map to container
+            if not os.path.exists(audio_path):
+                return {"error": f"Audio file not found: {audio_path}"}
+            
+            # Map host path to container path
+            # If filePath is provided (e.g., "train_data/train_sample_0.wav"), preserve subdirectory structure
+            # Otherwise, extract just the filename
+            if '/' in audio_path and not os.path.isabs(audio_path):
+                # Relative path with subdirectory (e.g., "train_data/train_sample_0.wav")
+                # Use it directly as /data/train_data/train_sample_0.wav
+                container_file_path = f"/data/{audio_path}"
+            else:
+                # Absolute path or just filename - extract filename only
+                filename = os.path.basename(audio_path)
+                container_file_path = f"/data/{filename}"
         
         # Make request to FastRay API using path endpoint
         request_data = {
@@ -33,7 +47,7 @@ async def transcribe_audio(audio_path: str, model: str = "base", api_url: str = 
             "task": "transcribe",
             "beam_size": 5,
             "language": "en",
-            "model": model
+            "model": model  # Model parameter is passed here - API will cache/switch models as needed
         }
         
         # Make async request to FastRay API
@@ -47,14 +61,39 @@ async def transcribe_audio(audio_path: str, model: str = "base", api_url: str = 
                 f"{api_url}/transcribe/path",
                 json=request_data
             )
+            # Get more details on errors
+            if response.status_code >= 400:
+                error_detail = f"HTTP {response.status_code}"
+                try:
+                    error_body = response.json()
+                    if isinstance(error_body, dict) and "detail" in error_body:
+                        error_detail += f": {error_body['detail']}"
+                    elif isinstance(error_body, dict):
+                        error_detail += f": {error_body}"
+                    else:
+                        error_detail += f": {response.text[:200]}"
+                except:
+                    error_detail += f": {response.text[:200] if hasattr(response, 'text') else 'No error details'}"
+                return {"error": f"API request failed: {error_detail}", "status_code": response.status_code, "file_path": container_file_path}
+            
             response.raise_for_status()
             result = response.json()
             return result
         
+    except httpx.HTTPStatusError as e:
+        # Get response body for more details
+        error_detail = f"HTTP {e.response.status_code}"
+        try:
+            error_body = e.response.json()
+            if isinstance(error_body, dict) and "detail" in error_body:
+                error_detail += f": {error_body['detail']}"
+        except:
+            error_detail += f": {str(e)}"
+        return {"error": f"API request failed: {error_detail}", "status_code": e.response.status_code, "file_path": container_file_path if 'container_file_path' in locals() else audio_path}
     except httpx.HTTPError as e:
-        return {"error": f"API request failed: {str(e)}"}
+        return {"error": f"API request failed: {str(e)}", "file_path": container_file_path if 'container_file_path' in locals() else audio_path}
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e), "file_path": container_file_path if 'container_file_path' in locals() else audio_path}
 
 
 def get_transcription_stats(table, model_column_name="whisper_base", refresh_table=False):
@@ -98,7 +137,8 @@ def get_transcription_stats(table, model_column_name="whisper_base", refresh_tab
     
     # Count rows with None or empty dict/list (missing transcriptions)
     # The column should store a dict, but we check for None, empty dicts, and empty lists (legacy)
-    all_rows = table.select(table.id, model_column).collect()
+    # We don't need the ID column for counting, so just select the model column
+    all_rows = table.select(model_column).collect()
     rows_with_none = 0
     for row in all_rows:
         # Try multiple ways to access the column value
@@ -242,7 +282,8 @@ def extract_inference_times(table, model_column_name="whisper_base"):
     model_column = getattr(table, model_column_name)
     
     # Get rows with transcriptions (not None)
-    rows_with_transcription = table.select(table.id, model_column).where(model_column != None).collect()
+    # We don't need the ID column for this, just the model column
+    rows_with_transcription = table.select(model_column).where(model_column != None).collect()
     
     inference_times = []
     for row in rows_with_transcription:

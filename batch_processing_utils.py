@@ -60,10 +60,16 @@ def process_batch(table, model_columns, batch_size=100, max_concurrent_requests=
         status_info = asyncio.run(check_service_status(api_url))
         print_service_status(status_info)
     
-    # Verify ID column exists
+    # Verify ID column exists (needed for batch updates)
     if not hasattr(table, 'id'):
-        print("Error: ID column not found. Please ensure the table has an 'id' column.")
-        return []
+        print("⚠️  Warning: ID column not found. Batch updates require an 'id' column.")
+        print("   Attempting to create 'id' column from audio filename...")
+        from db_helpers import ensure_id_column
+        ensure_id_column(table)
+        if not hasattr(table, 'id'):
+            print("❌ Error: Could not create 'id' column. Batch processing cannot proceed.")
+            print("   Please add an 'id' column manually or use a table with a primary key.")
+            return []
     
     # Get the model column reference
     model_column_ref = getattr(table, model_column)
@@ -71,16 +77,29 @@ def process_batch(table, model_columns, batch_size=100, max_concurrent_requests=
     # Get rows where model_column is None/NULL or empty list
     # Since the column stores a list, we need to check for both None and empty lists
     # First, try to get rows where column is None/NULL
+    # Build select columns - only include columns that exist
+    select_cols = [table.audio, model_column_ref]
+    if hasattr(table, 'id'):
+        select_cols.insert(0, table.id)
+    if hasattr(table, 'filePath'):
+        select_cols.append(table.filePath)
+    
+    # Query for rows that need transcription
+    # IMPORTANT: We query WITHOUT a limit first to ensure we get all rows that need transcription.
+    # The previous code used .limit(batch_size * 2) which could miss rows if more than 5000 needed processing.
+    # We filter in Python and then apply batch_size limit only after filtering.
     try:
-        # Try direct == None first
-        result = table.select(table.id, table.audio, table.filePath, model_column_ref).where(model_column_ref == None).limit(batch_size * 2).collect()
+        # Try direct == None first - NO LIMIT, we want all rows that need transcription
+        # Only apply limit after we've filtered to rows that actually need transcription
+        result = table.select(*select_cols).where(model_column_ref == None).collect()
         if len(result) == 0:
             # If that returns nothing, try .str == None (Json-specific)
-            result = table.select(table.id, table.audio, table.filePath, model_column_ref).where(model_column_ref.str == None).limit(batch_size * 2).collect()
+            result = table.select(*select_cols).where(model_column_ref.str == None).collect()
     except Exception as e:
         # If both fail, collect all and filter in Python
+        # NO LIMIT here either - we need to see all rows to filter properly
         print(f"⚠️  Note: SQL NULL check failed, filtering in Python: {e}")
-        result = table.select(table.id, table.audio, table.filePath, model_column_ref).limit(batch_size * 2).collect()
+        result = table.select(*select_cols).collect()
     
     # Filter in Python to handle both None and empty lists
     # A row needs transcription if: column is None, or column is an empty list []
@@ -89,13 +108,18 @@ def process_batch(table, model_columns, batch_size=100, max_concurrent_requests=
         col_value = row.get(model_column) if hasattr(row, 'get') else row[model_column] if isinstance(row, dict) else getattr(row, model_column, None)
         # Check if None or empty list
         if col_value is None or (isinstance(col_value, list) and len(col_value) == 0):
-            filtered_result.append({
-                'id': row.get('id') if hasattr(row, 'get') else row['id'] if isinstance(row, dict) else getattr(row, 'id', None),
-                'audio': row.get('audio') if hasattr(row, 'get') else row['audio'] if isinstance(row, dict) else getattr(row, 'audio', None),
-                'filePath': row.get('filePath') if hasattr(row, 'get') else row['filePath'] if isinstance(row, dict) else getattr(row, 'filePath', None)
-            })
+            row_dict = {
+                'audio': row.get('audio') if hasattr(row, 'get') else row['audio'] if isinstance(row, dict) else getattr(row, 'audio', None)
+            }
+            # Only add filePath if it exists in the table and row
+            if hasattr(table, 'filePath'):
+                row_dict['filePath'] = row.get('filePath') if hasattr(row, 'get') else row.get('filePath', None) if isinstance(row, dict) else getattr(row, 'filePath', None)
+            # Only add id if it exists
+            if hasattr(table, 'id'):
+                row_dict['id'] = row.get('id') if hasattr(row, 'get') else row['id'] if isinstance(row, dict) else getattr(row, 'id', None)
+            filtered_result.append(row_dict)
     
-    # Limit to batch_size
+    # Limit to batch_size AFTER filtering - this ensures we process rows that actually need transcription
     result = filtered_result[:batch_size]
     
     if len(result) == 0:
@@ -112,7 +136,7 @@ def process_batch(table, model_columns, batch_size=100, max_concurrent_requests=
     print(f"\nFound {len(result_df)} rows with {model_column} = None")
     print(f"Sample IDs: {result_df['id'].head().tolist() if len(result_df) > 0 else []}")
     print(f"Submitting all {len(result_df)} requests immediately (like stress test)")
-    print(f"Ray Serve will queue them (queue depth 3 per replica)")
+    print(f"Ray Serve will queue them (queue depth per replica: max_ongoing_requests)")
     
     # Create semaphore to limit concurrent requests (but submit all tasks immediately)
     # This allows all tasks to be created and submitted, but limits how many run at once
@@ -125,6 +149,7 @@ def process_batch(table, model_columns, batch_size=100, max_concurrent_requests=
     
     # Get Whisper model name from column name
     whisper_model = get_whisper_model_name(model_column)
+    print(f"📌 Using Whisper model: '{whisper_model}' for column '{model_column}'")
     
     # Initialize performance monitor
     monitor = ConcurrencyMonitor(api_url=api_url)
@@ -137,19 +162,39 @@ def process_batch(table, model_columns, batch_size=100, max_concurrent_requests=
         success = False
         
         try:
-            # Extract audio path - handle dict, Audio object, or string
-            audio_val = row['audio']
-            if isinstance(audio_val, dict):
-                # If it's a dict, try to get the 'path' key
-                audio_path = audio_val.get('path', str(audio_val))
-            elif hasattr(audio_val, 'path'):
-                # If it's an Audio object with a path attribute
-                audio_path = audio_val.path
+            import os
+            # Prefer filePath if it exists (should be container path)
+            if 'filePath' in row and row.get('filePath'):
+                audio_path = row['filePath']
             else:
-                # Otherwise, convert to string
-                audio_path = str(audio_val)
+                # Extract audio path - handle dict, Audio object, or string
+                audio_val = row['audio']
+                if isinstance(audio_val, dict):
+                    # If it's a dict, try to get the 'path' key
+                    audio_path = audio_val.get('path', str(audio_val))
+                elif hasattr(audio_val, 'path'):
+                    # If it's an Audio object with a path attribute
+                    audio_path = audio_val.path
+                else:
+                    # Otherwise, convert to string
+                    audio_path = str(audio_val)
+                
+                # Map host path to container path if needed
+                # Container: all files are in /data/
+                if audio_path.startswith('./'):
+                    # Relative path - extract just the filename
+                    audio_path = os.path.basename(audio_path.lstrip('./'))
+                elif os.path.isabs(audio_path):
+                    # Absolute path - extract just the filename
+                    audio_path = os.path.basename(audio_path)
+                
+                # Map to container path: /data/<filename>
+                if not audio_path.startswith('/'):
+                    audio_path = f"/data/{audio_path}"
             
-            row_id = row['id']
+            row_id = row.get('id') if hasattr(row, 'get') else row['id'] if isinstance(row, dict) and 'id' in row else getattr(row, 'id', None)
+            if row_id is None:
+                raise Exception("Row ID is required for updates but not found in row data")
             
             # Submit request immediately (like stress test)
             # Semaphore limits concurrent execution, but all tasks are created
@@ -178,14 +223,17 @@ def process_batch(table, model_columns, batch_size=100, max_concurrent_requests=
         except Exception as e:
             response_time = time.time() - start_time
             if retry_count < max_retries:
-                print(f"⚠️  Retry {retry_count + 1}/{max_retries} for row {row['id']}: {str(e)[:100]}")
+                row_id_str = row.get('id', 'unknown') if hasattr(row, 'get') else row.get('id', 'unknown') if isinstance(row, dict) else getattr(row, 'id', 'unknown')
+                print(f"⚠️  Retry {retry_count + 1}/{max_retries} for row {row_id_str}: {str(e)[:100]}")
                 await asyncio.sleep(2 ** retry_count)  # Exponential backoff
                 return await process_row_with_retry(idx, row, retry_count + 1)
             else:
-                print(f"❌ Failed after {max_retries} retries for row {row['id']}: {str(e)[:100]}")
+                row_id_str = row.get('id', 'unknown') if hasattr(row, 'get') else row.get('id', 'unknown') if isinstance(row, dict) else getattr(row, 'id', 'unknown')
+                print(f"❌ Failed after {max_retries} retries for row {row_id_str}: {str(e)[:100]}")
                 monitor.record_response(response_time, success=False)
                 # Return error result so we can track it
-                return row['id'], {"error": str(e), "retries_exhausted": True}
+                row_id_for_error = row.get('id') if hasattr(row, 'get') else row['id'] if isinstance(row, dict) and 'id' in row else getattr(row, 'id', None)
+                return row_id_for_error, {"error": str(e), "retries_exhausted": True}
     
     def update_batch(batch_results):
         """Update a batch of rows using batch_update() - ensures correct matching"""

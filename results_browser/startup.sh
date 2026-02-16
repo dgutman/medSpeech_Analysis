@@ -128,7 +128,6 @@ elif [ -f "app.py" ] && [ -w "app.py" ]; then
     echo "🔄 Development mode detected - using Dash dev server"
     # Disable reloader/threading inside containers: Pixeltable embedded PG + SQLAlchemy connections
     # can break under concurrent dev-server reloads/threads.
-    # WARNING: Global variable caching may not work reliably in dev mode
     export DASH_USE_RELOADER=${DASH_USE_RELOADER:-0}
     export DASH_THREADED=${DASH_THREADED:-0}
     exec python app.py

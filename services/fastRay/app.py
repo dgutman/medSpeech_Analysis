@@ -64,6 +64,16 @@ class BatchPathJob(BaseModel):
 # ----- Ray Serve deployment -----
 # FastAPI provides /docs automatically, so we keep it
 # The routing issue is Ray Serve configuration, not FastAPI
+#
+# IMPORTANT: To use all 4 GPUs, ensure NUM_REPLICAS × NUM_GPUS_PER_REPLICA = 4.0
+# Ray will automatically distribute replicas evenly across all 4 GPUs when total = 4.0
+# Examples:
+#   - 4 replicas × 1.0 GPU = 4.0 GPUs ✓
+#   - 8 replicas × 0.5 GPU = 4.0 GPUs ✓
+#   - 16 replicas × 0.25 GPU = 4.0 GPUs ✓
+#   - 20 replicas × 0.2 GPU = 4.0 GPUs ✓
+#   - 40 replicas × 0.1 GPU = 4.0 GPUs ✓
+
 @serve.deployment(
     num_replicas=int(os.environ.get("NUM_REPLICAS", "1")),
     ray_actor_options={
@@ -501,6 +511,9 @@ class WhisperService:
             request_distribution = dict(tracking)
             total_requests = sum(request_distribution.values())
         
+        # Get MAX_ONGOING_REQUESTS from environment (used in deployment config)
+        max_ongoing_requests = int(os.environ.get("MAX_ONGOING_REQUESTS", "30"))
+        
         return {
             "default_model": self.default_model_name,
             "cached_models": cached_models,
@@ -511,6 +524,7 @@ class WhisperService:
             "replica_details": replica_details,
             "num_gpus_per_replica": num_gpus_per_replica,
             "total_gpus_allocated": num_replicas * num_gpus_per_replica,
+            "max_ongoing_requests": max_ongoing_requests,  # Add MAX_ONGOING_REQUESTS to config
             "device": "cuda" if torch.cuda.is_available() else "cpu",
             "gpu_info": gpu_info,
             "request_distribution": {

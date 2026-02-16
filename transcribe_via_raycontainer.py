@@ -10,8 +10,8 @@ except ImportError:
 
 # Set PIXELTABLE_PGDATA to absolute path before importing pixeltable
 # This prevents PostgreSQL from using wrong username in paths and ensures
-# we're using the same database as load_hf_hani89_to_pxt.py
-# Load from .env first, then fall back to default
+# we're using the same database as load_audio_to_pixeltable.py
+# Load from .env first (load_audio_to_pixeltable.py uses .env), then fall back to default
 if 'PIXELTABLE_PGDATA' not in os.environ:
     os.environ['PIXELTABLE_PGDATA'] = '/scr/dagutman/devel/medSpeech_Analysis/.pxtData'
 
@@ -31,8 +31,38 @@ import pixeltable as pxt
 from batch_processing_utils import process_batch
 
 
-# Initialize table
-t = initialize_table()
+# Initialize table - use same configuration as load_audio_to_pixeltable.py
+# Read from .env with defaults (same as load_audio_to_pixeltable.py)
+pxt_dir = os.getenv('PIXELTABLE_DIR', 'hani89_asr_data_reload')
+table_name = os.getenv('PIXELTABLE_TABLE', 'transcribe_compare')
+TABLE_NAME = f'{pxt_dir}.{table_name}'
+
+# First ensure the directory exists (same as load_audio_to_pixeltable.py does)
+pxt.create_dir(pxt_dir, if_exists='ignore')
+
+# Create the table if it doesn't exist (same schema as load_audio_to_pixeltable.py)
+try:
+    t = pxt.get_table(TABLE_NAME)
+except Exception:
+    # Table doesn't exist, create it with the same schema as load_audio_to_pixeltable.py
+    print(f"Table {TABLE_NAME} doesn't exist, creating it...")
+    pxt.create_table(
+        TABLE_NAME,
+        {
+            'id': pxt.Required[pxt.String],
+            'audio': pxt.Audio,
+            'filename': pxt.String,
+            'transcription': pxt.String,
+            'split': pxt.String,
+            'filePath': pxt.String
+        },
+        if_exists='ignore',
+        primary_key='id'
+    )
+    t = pxt.get_table(TABLE_NAME)
+
+# Now initialize the table (ensures model columns exist)
+t = initialize_table(table_name=TABLE_NAME)
 
 # ============================================================================
 # TO ADD MORE MODELS:
@@ -96,6 +126,7 @@ if __name__ == "__main__":
         # The column should store a dict, but we check for None, empty dicts, and empty lists (legacy)
         # Collect rows and filter in Python
         all_rows = t.select(t.id, model_column_ref).collect()
+        total_rows = len(all_rows)
         initial_rows_needing = 0
         for row in all_rows:
             # Try multiple ways to access the column value
@@ -112,14 +143,15 @@ if __name__ == "__main__":
                 initial_rows_needing += 1
         
         if initial_rows_needing == 0:
-            print(f"✅ {model_column}: All rows already have transcriptions, skipping...")
+            print(f"✅ {model_column}: All {total_rows:,} rows already have transcriptions, skipping...")
             continue
         
-        print(f"📊 Found {initial_rows_needing:,} rows needing transcription for {model_column}")
+        print(f"📊 Found {initial_rows_needing:,} rows needing transcription for {model_column} (out of {total_rows:,} total rows)")
         
         # Process in batches until all rows are complete
         batch_size = 2500
         batch_count = 0
+        total_processed = 0  # Initialize counter
         
         while True:
             batch_count += 1
@@ -148,7 +180,7 @@ if __name__ == "__main__":
                 
                 if rows_needing_transcription == 0:
                     total_processed = initial_rows_needing
-                    print(f"\n✅ {model_column}: All {total_processed:,} rows completed!")
+                    print(f"\n✅ {model_column}: All {total_processed:,} rows completed! (Total rows in table: {total_rows:,})")
                     break
                 
                 print(f"\n🔄 Processing batch {batch_count} for {model_column} ({rows_needing_transcription:,} remaining)...")
@@ -166,6 +198,12 @@ if __name__ == "__main__":
                 model_column=model_column
             )
             
+            # If process_batch found no rows to process, we're done
+            if len(updates) == 0:
+                print(f"\n✅ {model_column}: No more rows to process (all complete or no matching rows found) (Total rows in table: {total_rows:,})")
+                # total_processed already set from previous iterations or initial value
+                break
+            
             # Only re-check remaining rows every 3 batches (skip expensive query)
             if batch_count % 3 == 0:
                 # Re-check remaining rows from database (more accurate than counting updates)
@@ -181,7 +219,7 @@ if __name__ == "__main__":
                 
                 if rows_after == 0:
                     total_processed = initial_rows_needing
-                    print(f"\n✅ {model_column}: All {total_processed:,} rows completed!")
+                    print(f"\n✅ {model_column}: All {total_processed:,} rows completed! (Total rows in table: {total_rows:,})")
                     break
                 else:
                     total_processed_so_far = initial_rows_needing - rows_after

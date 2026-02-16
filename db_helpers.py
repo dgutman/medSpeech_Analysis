@@ -1,61 +1,54 @@
 """
 Database helper functions for pixeltable operations.
 
-Integrates with the refactored config system for consistent table naming.
-Model configuration is loaded from models.json for easy modification.
+Table name from .env (PIXELTABLE_DIR, PIXELTABLE_TABLE). Model configuration
+can be extended via load_model_config() / models.json if present.
 """
 import os
 import json
 import pixeltable as pxt
-from config import get_config
 from pathlib import Path
 
-# Get configuration
-config = get_config()
+# Table configuration - read from .env with defaults
+# Set PIXELTABLE_DIR and PIXELTABLE_TABLE in .env to override
+pxtDir = os.getenv('PIXELTABLE_DIR', 'hani89_asr_data_reload')
+rawTable = os.getenv('PIXELTABLE_TABLE', 'transcribe_compare')
 
-# Full table name from config
-TABLE_NAME = config.get_table_name()
+# Full table name
+TABLE_NAME = f'{pxtDir}.{rawTable}'
 
-# Load model configuration from JSON file
+# Default model configuration: column_name -> Whisper model name
+_DEFAULT_MODEL_CONFIG = {
+    "whisper_tiny": "tiny",
+    "whisper_base": "base",
+    "whisper_small": "small",
+    "whisper_medium": "medium",
+    "whisper_large": "large",
+    "tiny_rep1": "tiny",
+    "tiny_rep2": "tiny",
+    "tiny_rep3": "tiny",
+    "tiny_rep4": "tiny",
+    "tiny_rep5": "tiny",
+}
+
+
 def load_model_config():
-    """Load model configuration from models.json file."""
+    """Load model configuration from models.json if present, else use defaults."""
     models_file = Path(__file__).parent / "models.json"
-    
     if not models_file.exists():
-        # Fallback to hardcoded config if file doesn't exist
-        print(f"⚠️  Warning: {models_file} not found, using default configuration")
-        return {
-            "whisper_tiny": "tiny",
-            "whisper_base": "base",
-            "whisper_small": "small",
-            "whisper_medium": "medium",
-            "whisper_large": "large",
-            "whisper_turbo": "large-v3",
-        }, {}
-    
+        return _DEFAULT_MODEL_CONFIG.copy(), {}
     try:
         with open(models_file, 'r') as f:
             config_data = json.load(f)
-        
-        models = config_data.get('models', {})
+        models = config_data.get('models', _DEFAULT_MODEL_CONFIG)
         replicas = config_data.get('replicas', {})
-        
-        # Remove comment keys (those starting with _)
         replicas = {k: v for k, v in replicas.items() if not k.startswith('_')}
-        
         return models, replicas
-    
     except Exception as e:
-        print(f"⚠️  Warning: Error loading {models_file}: {e}")
-        print("   Using default configuration")
-        return {
-            "whisper_tiny": "tiny",
-            "whisper_base": "base",
-            "whisper_small": "small",
-            "whisper_medium": "medium",
-            "whisper_large": "large",
-            "whisper_turbo": "large-v3",
-        }, {}
+        print(f"⚠️  Warning: Error loading {models_file}: {e}, using defaults")
+        return _DEFAULT_MODEL_CONFIG.copy(), {}
+}
+
 
 # Load model and replica configurations
 MODEL_CONFIG, REPLICA_CONFIG = load_model_config()
@@ -139,18 +132,67 @@ def get_whisper_model_name(model_column_name: str) -> str:
     return MODEL_CONFIG_FULL.get(model_column_name, "base")
 
 
-def initialize_table(table_name: str = None, ensure_models: bool = True):
+# UDF functions for creating ID columns (must be at module level for Pixeltable)
+@pxt.udf
+def name_files_from_json(audio: pxt.Json, split: pxt.String) -> pxt.String:
+    """Extract filename from Json audio object"""
+    filename = audio["path"][13:] if len(audio["path"]) > 13 else os.path.basename(audio["path"])
+    return split + '_' + filename
+
+@pxt.udf
+def name_files_from_audio(audio: pxt.Audio, split: pxt.String) -> pxt.String:
+    """Extract filename from Audio path"""
+    filename = os.path.basename(str(audio))
+    return split + '_' + filename
+
+
+def ensure_id_column(table):
+    """
+    Ensure the table has an 'id' column. Creates it from audio filename if missing.
+    
+    Args:
+        table: Pixeltable table object
+    
+    Returns:
+        The table object
+    """
+    if hasattr(table, 'id'):
+        return table
+    
+    # Try to add id column based on audio type
+    try:
+        if hasattr(table, 'audio'):
+            # Check if audio is Json or Audio type
+            try:
+                # Try Json first
+                table.add_computed_column(id=name_files_from_json(table.audio, table.split), if_exists='ignore')
+            except:
+                # Fallback to Audio
+                table.add_computed_column(id=name_files_from_audio(table.audio, table.split), if_exists='ignore')
+        else:
+            print("⚠️  No 'audio' column found, cannot create 'id' column automatically")
+    except Exception as e:
+        print(f"⚠️  Could not create 'id' column: {e}")
+    
+    return table
+
+
+def initialize_table(table_name: str = None, ensure_models: bool = True, ensure_id: bool = True):
     """
     Initialize the table and ensure required columns exist.
     
     Args:
         table_name: Name of the table (defaults to TABLE_NAME)
         ensure_models: Whether to ensure model columns exist
+        ensure_id: Whether to ensure 'id' column exists (needed for batching)
     
     Returns:
         Pixeltable table object
     """
     table = get_table(table_name)
+    
+    if ensure_id:
+        ensure_id_column(table)
     
     if ensure_models:
         ensure_model_columns(table)

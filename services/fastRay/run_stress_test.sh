@@ -64,8 +64,10 @@ echo "Starting stress test..."
 echo ""
 
 # Export environment variables so stress_test.py can use them
+export API_URL
 export MAX_WORKERS
 export MODEL
+# DATA_DIR can also be set if you want to override the default
 
 python3 stress_test.py
 
@@ -74,7 +76,9 @@ cleanup_monitor
 
 echo ""
 echo "=== Stress Test Complete ==="
-echo "Results saved to: stress_test_results.json"
+echo "Results saved to: stress_test_results_<timestamp>.json"
 echo "GPU monitoring log: gpu_monitor.log"
 echo "GPU monitoring data: gpu_monitoring.json"
+echo ""
+echo "Note: Results file includes timestamp (format: stress_test_results_YYYYMMDD_HHMMSS.json)"
 

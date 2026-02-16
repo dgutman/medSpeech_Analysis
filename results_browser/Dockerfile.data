@@ -25,7 +25,7 @@ ENV PYTHONPATH=/app
 
 # Accept build arguments for API key
 ARG PIXELTABLE_API_KEY
-ARG PIXELTABLE_DATASET_URL=pxt://speech-to-text-analytics:main/hani89_asr_dataset
+ARG PIXELTABLE_DATASET_URL=pxt://speech-to-text-analytics:main/hani89_asr_data_reload/transcribe_compare
 
 # Set environment variables for build
 ENV PIXELTABLE_API_KEY=${PIXELTABLE_API_KEY}
