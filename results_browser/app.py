@@ -70,9 +70,8 @@ def health_check():
 server = app.server
 
 if __name__ == "__main__":
-    # IMPORTANT: Dash's reloader/threaded dev server can create concurrent Pixeltable env/DB init,
-    # which leads to errors like "Circular env initialization detected" and psycopg INTRANS issues.
-    # Allow toggling via env vars so we can disable reloader/threading inside Docker.
+    # Pixeltable: multiple processes OK, multiple threads in same process NOT. Disable reloader/threading.
+    # Allow toggling via env vars (DASH_USE_RELOADER=0, DASH_THREADED=0) for Docker.
     debug = os.environ.get("DASH_DEBUG", "1") == "1"
     use_reloader = os.environ.get("DASH_USE_RELOADER", "1") == "1"
     threaded = os.environ.get("DASH_THREADED", "0") == "1"

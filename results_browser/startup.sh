@@ -111,28 +111,30 @@ fi
 # Start the application
 echo "🌐 Starting web application on port 8050..."
 
-# Check which app to run (simple or full)
-APP_MODULE=${APP_MODULE:-app:server}  # Default to full app
-if [ "$USE_SIMPLE_APP" = "1" ]; then
+# Check which app to run (simple or full). Fall back to full app if app_simple.py is missing.
+APP_MODULE=${APP_MODULE:-app:server}
+if [ "$USE_SIMPLE_APP" = "1" ] && [ -f "app_simple.py" ]; then
     APP_MODULE="app_simple:server"
     echo "📋 Using simplified app (fast table only)"
+else
+    echo "📋 Using full app (app:server)"
 fi
 
 # Check if FORCE_PRODUCTION_MODE is set, or if we're in development mode (bind mount exists)
 if [ "$FORCE_PRODUCTION_MODE" = "1" ] || [ "$USE_GUNICORN" = "1" ]; then
     echo "🏭 Production mode (forced) - using Gunicorn"
-    # Use fewer workers and preload app to reduce concurrent database connections
-    # Single worker + preload ensures global variable caching works
+    # Pixeltable: multiple PROCESSES are OK, multiple THREADS in the same process are NOT.
+    # So we use --workers 1 (one process). Do not increase workers or use threaded workers.
+    # Preload warms the app (and Pixeltable connection) once in the single process.
     exec gunicorn -b 0.0.0.0:8050 --workers 1 --timeout 120 --preload $APP_MODULE
 elif [ -f "app.py" ] && [ -w "app.py" ]; then
     echo "🔄 Development mode detected - using Dash dev server"
-    # Disable reloader/threading inside containers: Pixeltable embedded PG + SQLAlchemy connections
-    # can break under concurrent dev-server reloads/threads.
+    # Pixeltable: multiple threads in the same process are NOT supported. Keep threading off.
     export DASH_USE_RELOADER=${DASH_USE_RELOADER:-0}
     export DASH_THREADED=${DASH_THREADED:-0}
     exec python app.py
 else
     echo "🏭 Production mode - using Gunicorn"
-    # Use fewer workers and preload app to reduce concurrent database connections
+    # Pixeltable: use --workers 1 only; no threaded workers (multiple threads per process not supported).
     exec gunicorn -b 0.0.0.0:8050 --workers 1 --timeout 120 --preload $APP_MODULE
 fi

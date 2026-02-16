@@ -59,7 +59,7 @@ services:
       - PIXELTABLE_PGDATA=/home/appuser/.pixeltable/pgdata
       # Force production mode with Gunicorn for better performance and reliable caching
       - USE_GUNICORN=1
-      # Use simplified app (set to 0 for full app with all tabs)
+      # Use simplified app (set to 0 for full app with all tabs); startup.sh falls back to full app if app_simple.py missing
       - USE_SIMPLE_APP=1
     env_file:
       - ../.env
